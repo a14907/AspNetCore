@@ -41,6 +41,58 @@ describe("HubConnection", () => {
             });
         });
 
+        it("can change url", async () => {
+            await VerifyLogger.run(async (logger) => {
+                const connection = new TestConnection();
+                const hubConnection = createHubConnection(connection, logger);
+                try {
+                    await hubConnection.start();
+                    await hubConnection.stop();
+                    hubConnection.baseUrl = "http://newurl.com";
+                    expect(hubConnection.baseUrl).toBe("http://newurl.com");
+                } finally {
+                    await hubConnection.stop();
+                }
+            });
+        });
+
+        it("can change url in onclose", async () => {
+            await VerifyLogger.run(async (logger) => {
+                const connection = new TestConnection();
+                const hubConnection = createHubConnection(connection, logger);
+                try {
+                    await hubConnection.start();
+
+                    expect(hubConnection.baseUrl).toBe("http://example.com");
+                    hubConnection.onclose(() => {
+                        hubConnection.baseUrl = "http://newurl.com";
+                    });
+
+                    await hubConnection.stop();
+                    expect(hubConnection.baseUrl).toBe("http://newurl.com");
+                } finally {
+                    await hubConnection.stop();
+                }
+            });
+        });
+
+        it("changing url while active throws", async () => {
+            await VerifyLogger.run(async (logger) => {
+                const connection = new TestConnection();
+                const hubConnection = createHubConnection(connection, logger);
+                try {
+                    await hubConnection.start();
+
+                    expect(() => {
+                        hubConnection.baseUrl = "http://newurl.com";
+                    }).toThrow("The HubConnection must be in the Disconnected or Reconnecting state to change the url.");
+
+                } finally {
+                    await hubConnection.stop();
+                }
+            });
+        });
+
         it("state connected", async () => {
             await VerifyLogger.run(async (logger) => {
                 const connection = new TestConnection();
@@ -70,6 +122,25 @@ describe("HubConnection", () => {
 
                     const numPings = connection.sentData.filter((s) => JSON.parse(s).type === MessageType.Ping).length;
                     expect(numPings).toBeGreaterThanOrEqual(2);
+                } finally {
+                    await hubConnection.stop();
+                }
+            });
+        });
+
+        it("does not send pings for connection with inherentKeepAlive", async () => {
+            await VerifyLogger.run(async (logger) => {
+                const connection = new TestConnection(true, true);
+                const hubConnection = createHubConnection(connection, logger);
+
+                hubConnection.keepAliveIntervalInMilliseconds = 5;
+
+                try {
+                    await hubConnection.start();
+                    await delayUntil(500);
+
+                    const numPings = connection.sentData.filter((s) => JSON.parse(s).type === MessageType.Ping).length;
+                    expect(numPings).toEqual(0);
                 } finally {
                     await hubConnection.stop();
                 }
@@ -113,7 +184,34 @@ describe("HubConnection", () => {
                             "arg",
                             42,
                         ],
-                        streamIds: [],
+                        target: "testMethod",
+                        type: MessageType.Invocation,
+                    });
+                } finally {
+                    // Close the connection
+                    await hubConnection.stop();
+                }
+            });
+        });
+
+        it("works if argument is null", async () => {
+            await VerifyLogger.run(async (logger) => {
+                const connection = new TestConnection();
+
+                const hubConnection = createHubConnection(connection, logger);
+                try {
+                    // We don't actually care to wait for the send.
+                    // tslint:disable-next-line:no-floating-promises
+                    hubConnection.send("testMethod", "arg", null)
+                        .catch((_) => { }); // Suppress exception and unhandled promise rejection warning.
+
+                    // Verify the message is sent
+                    expect(connection.sentData.length).toBe(1);
+                    expect(JSON.parse(connection.sentData[0])).toEqual({
+                        arguments: [
+                            "arg",
+                            null,
+                        ],
                         target: "testMethod",
                         type: MessageType.Invocation,
                     });
@@ -145,7 +243,6 @@ describe("HubConnection", () => {
                             42,
                         ],
                         invocationId: connection.lastInvocationId,
-                        streamIds: [],
                         target: "testMethod",
                         type: MessageType.Invocation,
                     });
@@ -741,7 +838,9 @@ describe("HubConnection", () => {
 
                     await hubConnection.start();
 
+                    // allowReconnect Should have no effect since auto reconnect is disabled by default.
                     connection.receive({
+                        allowReconnect: true,
                         error: "Error!",
                         type: MessageType.Close,
                     });
@@ -896,7 +995,6 @@ describe("HubConnection", () => {
                             42,
                         ],
                         invocationId: connection.lastInvocationId,
-                        streamIds: [],
                         target: "testStream",
                         type: MessageType.StreamInvocation,
                     });
@@ -1047,7 +1145,7 @@ describe("HubConnection", () => {
                     hubConnection.stream("testMethod").subscribe(NullSubscriber.instance);
 
                     // Send completion to trigger observer.complete()
-                    // Expectation is connection.receive will not to throw
+                    // Expectation is connection.receive will not throw
                     connection.receive({ type: MessageType.Completion, invocationId: connection.lastInvocationId });
                 } finally {
                     await hubConnection.stop();
@@ -1192,18 +1290,22 @@ describe("HubConnection", () => {
                 const connection = new TestConnection();
                 const hubConnection = createHubConnection(connection, logger);
                 try {
-                    hubConnection.serverTimeoutInMilliseconds = 400;
+                    const timeoutInMilliseconds = 400;
+                    hubConnection.serverTimeoutInMilliseconds = timeoutInMilliseconds;
 
                     const p = new PromiseSource<Error>();
                     hubConnection.onclose((e) => p.resolve(e));
 
                     await hubConnection.start();
 
-                    for (let i = 0; i < 12; i++) {
-                        await pingAndWait(connection);
-                    }
+                    const pingInterval = setInterval(async () => {
+                        await connection.receive({ type: MessageType.Ping });
+                    }, 10);
+
+                    await delayUntil(timeoutInMilliseconds * 2);
 
                     await connection.stop();
+                    clearInterval(pingInterval);
 
                     const error = await p.promise;
 
@@ -1236,11 +1338,6 @@ describe("HubConnection", () => {
         });
     });
 });
-
-async function pingAndWait(connection: TestConnection): Promise<void> {
-    await connection.receive({ type: MessageType.Ping });
-    await delayUntil(50);
-}
 
 class TestProtocol implements IHubProtocol {
     public readonly name: string = "TestProtocol";

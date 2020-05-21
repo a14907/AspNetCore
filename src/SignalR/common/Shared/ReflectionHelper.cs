@@ -16,12 +16,10 @@ namespace Microsoft.AspNetCore.SignalR
         {
             // TODO #2594 - add Streams here, to make sending files easy
 
-#if NETCOREAPP3_0
             if (IsIAsyncEnumerable(type))
             {
                 return true;
             }
-#endif
             do
             {
                 if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ChannelReader<>))
@@ -35,9 +33,13 @@ namespace Microsoft.AspNetCore.SignalR
             return false;
         }
 
-#if NETCOREAPP3_0
         public static bool IsIAsyncEnumerable(Type type)
         {
+            if (type.IsGenericType)
+            {
+                return type.GetGenericTypeDefinition() == typeof(IAsyncEnumerable<>);
+            }
+
             return type.GetInterfaces().Any(t =>
             {
                 if (t.IsGenericType)
@@ -50,6 +52,5 @@ namespace Microsoft.AspNetCore.SignalR
                 }
             });
         }
-#endif
     }
 }

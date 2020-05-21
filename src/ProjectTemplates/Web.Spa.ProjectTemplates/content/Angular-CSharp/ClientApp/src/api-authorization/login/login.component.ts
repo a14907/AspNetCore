@@ -52,10 +52,6 @@ export class LoginComponent implements OnInit {
     this.message.next(undefined);
     switch (result.status) {
       case AuthenticationResultStatus.Redirect:
-        // We replace the location here so that in case the user hits the back
-        // arrow from within the login page he doesn't get into an infinite
-        // redirect loop.
-        window.location.replace(result.redirectUrl);
         break;
       case AuthenticationResultStatus.Success:
         await this.navigateToReturnUrl(returnUrl);
@@ -105,7 +101,7 @@ export class LoginComponent implements OnInit {
 
   private getReturnUrl(state?: INavigationState): string {
     const fromQuery = (this.activatedRoute.snapshot.queryParams as INavigationState).returnUrl;
-    // If the url is comming from the query string, check that is either
+    // If the url is coming from the query string, check that is either
     // a relative url or an absolute url
     if (fromQuery &&
       !(fromQuery.startsWith(`${window.location.origin}/`) ||
@@ -120,9 +116,9 @@ export class LoginComponent implements OnInit {
 
   private redirectToApiAuthorizationPath(apiAuthorizationPath: string) {
     // It's important that we do a replace here so that when the user hits the back arrow on the
-    // browser he gets sent back to where it was on the app instead of to an endpoint on this
+    // browser they get sent back to where it was on the app instead of to an endpoint on this
     // component.
-    const redirectUrl = `${window.location.origin}${apiAuthorizationPath}`;
+    const redirectUrl = `${window.location.origin}/${apiAuthorizationPath}`;
     window.location.replace(redirectUrl);
   }
 }

@@ -4,10 +4,10 @@
 using System;
 using System.IO;
 using System.Text;
-using System.Text.Json.Serialization;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Formatters.Json;
+using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Mvc.Formatters
 {
@@ -16,13 +16,19 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
     /// </summary>
     public class SystemTextJsonInputFormatter : TextInputFormatter, IInputFormatterExceptionPolicy
     {
+        private readonly ILogger<SystemTextJsonInputFormatter> _logger;
+
         /// <summary>
         /// Initializes a new instance of <see cref="SystemTextJsonInputFormatter"/>.
         /// </summary>
-        /// <param name="options">The <see cref="MvcOptions"/>.</param>
-        public SystemTextJsonInputFormatter(MvcOptions options)
+        /// <param name="options">The <see cref="JsonOptions"/>.</param>
+        /// <param name="logger">The <see cref="ILogger"/>.</param>
+        public SystemTextJsonInputFormatter(
+            JsonOptions options,
+            ILogger<SystemTextJsonInputFormatter> logger)
         {
-            SerializerOptions = options.SerializerOptions;
+            SerializerOptions = options.JsonSerializerOptions;
+            _logger = logger;
 
             SupportedEncodings.Add(UTF8EncodingWithoutBOM);
             SupportedEncodings.Add(UTF16EncodingLittleEndian);
@@ -60,18 +66,40 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
             }
 
             var httpContext = context.HttpContext;
-            var inputStream = GetInputStream(httpContext, encoding);
+            var (inputStream, usesTranscodingStream) = GetInputStream(httpContext, encoding);
 
             object model;
             try
             {
-                model = await JsonSerializer.ReadAsync(inputStream, context.ModelType, SerializerOptions);
+                model = await JsonSerializer.DeserializeAsync(inputStream, context.ModelType, SerializerOptions);
+            }
+            catch (JsonException jsonException)
+            {
+                var path = jsonException.Path;
+
+                var formatterException = new InputFormatterException(jsonException.Message, jsonException);
+
+                context.ModelState.TryAddModelError(path, formatterException, context.Metadata);
+
+                Log.JsonInputException(_logger, jsonException);
+
+                return InputFormatterResult.Failure();
+            }
+            catch (Exception exception) when (exception is FormatException || exception is OverflowException)
+            {
+                // The code in System.Text.Json never throws these exceptions. However a custom converter could produce these errors for instance when
+                // parsing a value. These error messages are considered safe to report to users using ModelState.
+
+                context.ModelState.TryAddModelError(string.Empty, exception, context.Metadata);
+                Log.JsonInputException(_logger, exception);
+
+                return InputFormatterResult.Failure();
             }
             finally
             {
-                if (inputStream is TranscodingReadStream transcoding)
+                if (usesTranscodingStream)
                 {
-                    transcoding.Dispose();
+                    await inputStream.DisposeAsync();
                 }
             }
 
@@ -85,18 +113,44 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
             }
             else
             {
+                Log.JsonInputSuccess(_logger, context.ModelType);
                 return InputFormatterResult.Success(model);
             }
         }
 
-        private Stream GetInputStream(HttpContext httpContext, Encoding encoding)
+        private (Stream inputStream, bool usesTranscodingStream) GetInputStream(HttpContext httpContext, Encoding encoding)
         {
             if (encoding.CodePage == Encoding.UTF8.CodePage)
             {
-                return httpContext.Request.Body;
+                return (httpContext.Request.Body, false);
             }
 
-            return new TranscodingReadStream(httpContext.Request.Body, encoding);
+            var inputStream = Encoding.CreateTranscodingStream(httpContext.Request.Body, encoding, Encoding.UTF8, leaveOpen: true);
+            return (inputStream, true);
+        }
+
+        private static class Log
+        {
+            private static readonly Action<ILogger, string, Exception> _jsonInputFormatterException;
+            private static readonly Action<ILogger, string, Exception> _jsonInputSuccess;
+
+            static Log()
+            {
+                _jsonInputFormatterException = LoggerMessage.Define<string>(
+                    LogLevel.Debug,
+                    new EventId(1, "SystemTextJsonInputException"),
+                    "JSON input formatter threw an exception: {Message}");
+                _jsonInputSuccess = LoggerMessage.Define<string>(
+                    LogLevel.Debug,
+                    new EventId(2, "SystemTextJsonInputSuccess"),
+                    "JSON input formatter succeeded, deserializing to type '{TypeName}'");
+            }
+
+            public static void JsonInputException(ILogger logger, Exception exception) 
+                => _jsonInputFormatterException(logger, exception.Message, exception);
+
+            public static void JsonInputSuccess(ILogger logger, Type modelType)
+                => _jsonInputSuccess(logger, modelType.FullName, null);
         }
     }
 }

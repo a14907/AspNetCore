@@ -5,10 +5,10 @@ using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.IIS.FunctionalTests.Utilities;
 using Microsoft.AspNetCore.Server.IntegrationTesting.IIS;
-using Microsoft.AspNetCore.Testing.xunit;
+using Microsoft.AspNetCore.Testing;
 using Xunit;
 
-namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
+namespace Microsoft.AspNetCore.Server.IIS.FunctionalTests.InProcess
 {
     [Collection(PublishedSitesCollection.Name)]
     public class StartupExceptionTests : LogFileTestBase
@@ -91,7 +91,7 @@ namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
             Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
             var responseText = await response.Content.ReadAsStringAsync();
-            Assert.Contains("500.30 - ANCM In-Process Start Failure", responseText);
+            Assert.Contains("500.30", responseText);
         }
     }
 }

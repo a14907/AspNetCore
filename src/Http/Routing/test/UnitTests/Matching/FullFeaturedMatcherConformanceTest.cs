@@ -1,9 +1,10 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
+// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Routing.Matching
@@ -28,13 +29,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         [Fact]
@@ -43,13 +44,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
             // Arrange
             var endpoint = CreateEndpoint("/a/{b}/{c}", new { b = "17", c = "18", });
             var matcher = CreateMatcher(endpoint);
-            var (httpContext, context) = CreateContext("/a");
+            var httpContext = CreateContext("/a");
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, new { b = "17", c = "18", });
+            MatcherAssert.AssertMatch(httpContext, endpoint, new { b = "17", c = "18", });
         }
 
         [Fact]
@@ -58,13 +59,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
             // Arrange
             var endpoint = CreateEndpoint("/a/{b}/{c}", new { b = "17", c = "18", d = "19" });
             var matcher = CreateMatcher(endpoint);
-            var (httpContext, context) = CreateContext("/a");
+            var httpContext = CreateContext("/a");
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, new { b = "17", c = "18", d = "19" });
+            MatcherAssert.AssertMatch(httpContext, endpoint, new { b = "17", c = "18", d = "19" });
         }
 
         [Theory]
@@ -83,13 +84,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertNotMatch(context, httpContext);
+            MatcherAssert.AssertNotMatch(httpContext);
         }
 
         [Theory]
@@ -115,13 +116,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         [Theory]
@@ -138,13 +139,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertNotMatch(context, httpContext);
+            MatcherAssert.AssertNotMatch(httpContext);
         }
 
         [Theory]
@@ -162,18 +163,18 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         // Historically catchall segments don't match an empty segment, but only if it's
         // the first one. So `/a/b//` would match, but `/a//` would not. This is pretty
-        // wierd and inconsistent with the intent of using a catch all. The DfaMatcher
+        // weird and inconsistent with the intent of using a catch all. The DfaMatcher
         // fixes this issue.
         [Theory]
         [InlineData("/{a}/{*b=b}", "/a///", new[] { "a", "b", }, new[] { "a", "//" })]
@@ -182,13 +183,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertNotMatch(context, httpContext);
+            MatcherAssert.AssertNotMatch(httpContext);
 
             // Need to access these to prevent a warning from the xUnit analyzer.
             // Some of these tests will match (and process the values) and some will not.
@@ -217,13 +218,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         [Theory]
@@ -237,13 +238,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertNotMatch(context, httpContext);
+            MatcherAssert.AssertNotMatch(httpContext);
         }
 
         [Theory]
@@ -266,13 +267,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         [Theory]
@@ -292,13 +293,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertNotMatch(context, httpContext);
+            MatcherAssert.AssertNotMatch(httpContext);
         }
 
         // Most of are copied from old routing tests that date back to the VS 2010 era. Enjoy!
@@ -313,17 +314,17 @@ namespace Microsoft.AspNetCore.Routing.Matching
         [InlineData("(Controller).mvc", "/(Controller).mvc", new string[] { }, new string[] { })]
         [InlineData("Controller.mvc/ ", "/Controller.mvc/ ", new string[] { }, new string[] { })]
         [InlineData("Controller.mvc ", "/Controller.mvc ", new string[] { }, new string[] { })]
-        public virtual async Task Match_WierdCharacterCases(string template, string path, string[] keys, string[] values)
+        public virtual async Task Match_WeirdCharacterCases(string template, string path, string[] keys, string[] values)
         {
             // Arrange
             var (matcher, endpoint) = CreateMatcher(template);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, endpoint, keys, values);
+            MatcherAssert.AssertMatch(httpContext, endpoint, keys, values);
         }
 
         [Theory]
@@ -347,13 +348,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
 
             // Arrange
             var matcher = CreateMatcher(other, expected);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, expected, ignoreValues: true);
+            MatcherAssert.AssertMatch(httpContext, expected, ignoreValues: true);
         }
 
         [Theory]
@@ -381,13 +382,13 @@ namespace Microsoft.AspNetCore.Routing.Matching
 
             // Arrange
             var matcher = CreateMatcher(other, expected);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, expected, ignoreValues: true);
+            MatcherAssert.AssertMatch(httpContext, expected, ignoreValues: true);
         }
 
         [Theory]
@@ -434,13 +435,74 @@ namespace Microsoft.AspNetCore.Routing.Matching
             var expected = endpoints[Array.IndexOf(templates, expectedTemplate)];
 
             var matcher = CreateMatcher(endpoints);
-            var (httpContext, context) = CreateContext(path);
+            var httpContext = CreateContext(path);
 
             // Act
-            await matcher.MatchAsync(httpContext, context);
+            await matcher.MatchAsync(httpContext);
 
             // Assert
-            MatcherAssert.AssertMatch(context, httpContext, expected, ignoreValues: true);
+            MatcherAssert.AssertMatch(httpContext, expected, ignoreValues: true);
+        }
+
+        // https://github.com/dotnet/aspnetcore/issues/16579
+        [Fact]
+        public virtual async Task Match_Regression_16579_Order1()
+        {
+            var endpoints = new RouteEndpoint[]
+            {
+                EndpointFactory.CreateRouteEndpoint(
+                    "{controller}/folder/{*path}",
+                    order: 0,
+                    defaults: new { controller = "File", action = "Folder", },
+                    requiredValues: new { controller = "File", }),
+                EndpointFactory.CreateRouteEndpoint(
+                    "{controller}/{action}/{filename}",
+                    order: 1,
+                    defaults: new { controller = "File", action = "Index", },
+                    requiredValues: new { controller = "File", action = "Index", }),
+            };
+
+            var expected = endpoints[0];
+
+            var matcher = CreateMatcher(endpoints);
+            var httpContext = CreateContext("/file/folder/abc/abc");
+
+            // Act
+            await matcher.MatchAsync(httpContext);
+
+            // Assert
+            MatcherAssert.AssertMatch(httpContext, expected, ignoreValues: true);
+        }
+
+        // https://github.com/dotnet/aspnetcore/issues/16579
+        [Fact]
+        public virtual async Task Match_Regression_16579_Order2()
+        {
+            var endpoints = new RouteEndpoint[]
+            {
+                EndpointFactory.CreateRouteEndpoint(
+                    "{controller}/{action}/{filename}",
+                    order: 0,
+                    defaults: new { controller = "File", action = "Index", },
+                    requiredValues: new { controller = "File", action = "Index", }),
+
+                EndpointFactory.CreateRouteEndpoint(
+                    "{controller}/folder/{*path}",
+                    order: 1,
+                    defaults: new { controller = "File", action = "Folder", },
+                    requiredValues: new { controller = "File", }),
+            };
+
+            var expected = endpoints[1];
+
+            var matcher = CreateMatcher(endpoints);
+            var httpContext = CreateContext("/file/folder/abc/abc");
+
+            // Act
+            await matcher.MatchAsync(httpContext);
+
+            // Assert
+            MatcherAssert.AssertMatch(httpContext, expected, ignoreValues: true);
         }
     }
 }

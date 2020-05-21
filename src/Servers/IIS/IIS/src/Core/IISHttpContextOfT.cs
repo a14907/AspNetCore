@@ -11,6 +11,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.IIS.Core
 {
+    using BadHttpRequestException = Microsoft.AspNetCore.Http.BadHttpRequestException;
+
     internal class IISHttpContextOfT<TContext> : IISHttpContext
     {
         private readonly IHttpApplication<TContext> _application;
@@ -34,6 +36,12 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
 
                 await _application.ProcessRequestAsync(context);
             }
+            catch (BadHttpRequestException ex)
+            {
+                SetBadRequestState(ex);
+                ReportApplicationError(ex);
+                success = false;
+            }
             catch (Exception ex)
             {
                 ReportApplicationError(ex);
@@ -41,6 +49,7 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
             }
             finally
             {
+                await CompleteResponseBodyAsync();
                 _streams.Stop();
 
                 if (!HasResponseStarted && _applicationException == null && _onStarting != null)
@@ -59,7 +68,7 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
             {
                 await ProduceEnd();
             }
-            else if (!HasResponseStarted)
+            else if (!HasResponseStarted && _requestRejectedException == null)
             {
                 // If the request was aborted and no response was sent, there's no
                 // meaningful status code to log.

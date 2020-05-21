@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
+using System.Text.Encodings.Web;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
@@ -14,7 +15,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
 {
-    public partial class WebSocketsTransport : ITransport
+    internal partial class WebSocketsTransport : ITransport
     {
         private readonly ClientWebSocket _webSocket;
         private readonly Func<Task<string>> _accessTokenProvider;
@@ -23,6 +24,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
         private readonly ILogger _logger;
         private readonly TimeSpan _closeTimeout;
         private volatile bool _aborted;
+        private bool _isRunningInBrowser;
 
         private IDuplexPipe _transport;
 
@@ -36,8 +38,14 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
         {
             _webSocket = new ClientWebSocket();
 
-            // Issue in ClientWebSocket prevents user-agent being set - https://github.com/dotnet/corefx/issues/26627
-            //_webSocket.Options.SetRequestHeader("User-Agent", Constants.UserAgentHeader.ToString());
+            // Full Framework will throw when trying to set the User-Agent header
+            // So avoid setting it in netstandard2.0 and only set it in netstandard2.1 and higher
+#if !NETSTANDARD2_0
+            _webSocket.Options.SetRequestHeader("User-Agent", Constants.UserAgentHeader.ToString());
+#else
+            // Set an alternative user agent header on Full framework
+            _webSocket.Options.SetRequestHeader("X-SignalR-User-Agent", Constants.UserAgentHeader.ToString());
+#endif
 
             if (httpConnectionOptions != null)
             {
@@ -87,9 +95,11 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
 
             // Ignore the HttpConnectionOptions access token provider. We were given an updated delegate from the HttpConnection.
             _accessTokenProvider = accessTokenProvider;
+
+            _isRunningInBrowser = Utils.IsRunningInBrowser();
         }
 
-        public async Task StartAsync(Uri url, TransferFormat transferFormat)
+        public async Task StartAsync(Uri url, TransferFormat transferFormat, CancellationToken cancellationToken = default)
         {
             if (url == null)
             {
@@ -113,7 +123,17 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
                 var accessToken = await _accessTokenProvider();
                 if (!string.IsNullOrEmpty(accessToken))
                 {
-                    _webSocket.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
+                    // We can't use request headers in the browser, so instead append the token as a query string in that case
+                    if (_isRunningInBrowser)
+                    {
+                        var accessTokenEncoded = UrlEncoder.Default.Encode(accessToken);
+                        accessTokenEncoded = "access_token=" + accessTokenEncoded;
+                        resolvedUrl = Utils.AppendQueryString(resolvedUrl, accessTokenEncoded);
+                    }
+                    else
+                    {
+                        _webSocket.Options.SetRequestHeader("Authorization", $"Bearer {accessToken}");
+                    }
                 }
             }
 
@@ -121,7 +141,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
 
             try
             {
-                await _webSocket.ConnectAsync(resolvedUrl, CancellationToken.None);
+                await _webSocket.ConnectAsync(resolvedUrl, cancellationToken);
             }
             catch
             {
@@ -204,7 +224,8 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
             {
                 while (true)
                 {
-#if NETCOREAPP3_0
+#if NETSTANDARD2_1
+                    // Do a 0 byte read so that idle connections don't allocate a buffer when waiting for a read
                     var result = await socket.ReceiveAsync(Memory<byte>.Empty, CancellationToken.None);
 
                     if (result.MessageType == WebSocketMessageType.Close)
@@ -220,17 +241,19 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
                     }
 #endif
                     var memory = _application.Output.GetMemory();
-#if NETCOREAPP3_0
+#if NETSTANDARD2_1
                     // Because we checked the CloseStatus from the 0 byte read above, we don't need to check again after reading
                     var receiveResult = await socket.ReceiveAsync(memory, CancellationToken.None);
-#else
+#elif NETSTANDARD2_0
                     var isArray = MemoryMarshal.TryGetArray<byte>(memory, out var arraySegment);
                     Debug.Assert(isArray);
 
                     // Exceptions are handled above where the send and receive tasks are being run.
                     var receiveResult = await socket.ReceiveAsync(arraySegment, CancellationToken.None);
+#else
+#error TFMs need to be updated
 #endif
-                    // Need to check again for netcoreapp3.0 because a close can happen between a 0-byte read and the actual read
+                    // Need to check again for netstandard2.1 because a close can happen between a 0-byte read and the actual read
                     if (receiveResult.MessageType == WebSocketMessageType.Close)
                     {
                         Log.WebSocketClosed(_logger, _webSocket.CloseStatus);
@@ -266,10 +289,6 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
                 if (!_aborted)
                 {
                     _application.Output.Complete(ex);
-
-                    // We re-throw here so we can communicate that there was an error when sending
-                    // the close frame
-                    throw;
                 }
             }
             finally
@@ -344,8 +363,15 @@ namespace Microsoft.AspNetCore.Http.Connections.Client.Internal
             {
                 if (WebSocketCanSend(socket))
                 {
-                    // We're done sending, send the close frame to the client if the websocket is still open
-                    await socket.CloseOutputAsync(error != null ? WebSocketCloseStatus.InternalServerError : WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                    try
+                    {
+                        // We're done sending, send the close frame to the client if the websocket is still open
+                        await socket.CloseOutputAsync(error != null ? WebSocketCloseStatus.InternalServerError : WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.ClosingWebSocketFailed(_logger, ex);
+                    }
                 }
 
                 _application.Input.Complete();

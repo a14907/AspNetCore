@@ -35,8 +35,7 @@ module.exports = {
         path: path.resolve(__dirname, "wwwroot", "dist"),
     },
     externals: {
-        "@aspnet/signalr": "signalR",
-        "@aspnet/signalr-protocol-msgpack": "signalR.protocols.msgpack",
-        "request": "request",
+        "@microsoft/signalr": "signalR",
+        "@microsoft/signalr-protocol-msgpack": "signalR.protocols.msgpack",
     },
 };

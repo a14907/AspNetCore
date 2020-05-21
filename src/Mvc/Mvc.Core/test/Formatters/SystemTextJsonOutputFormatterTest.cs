@@ -4,7 +4,8 @@
 using System;
 using System.IO;
 using System.Text;
-using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
 using Microsoft.Net.Http.Headers;
@@ -16,22 +17,25 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
     {
         protected override TextOutputFormatter GetOutputFormatter()
         {
-            return new SystemTextJsonOutputFormatter(new MvcOptions());
+            return SystemTextJsonOutputFormatter.CreateFormatter(new JsonOptions());
         }
 
-        [Theory]
-        [MemberData(nameof(WriteCorrectCharacterEncoding))]
-        public async Task WriteToStreamAsync_UsesCorrectCharacterEncoding(
-           string content,
-           string encodingAsString,
-           bool isDefaultEncoding)
+        [Fact]
+        public async Task WriteResponseBodyAsync_AllowsConfiguringPreserveReferenceHandling()
         {
             // Arrange
             var formatter = GetOutputFormatter();
-            var expectedContent = "\"" + JavaScriptEncoder.Default.Encode(content) + "\"";
-            var mediaType = MediaTypeHeaderValue.Parse(string.Format("application/json; charset={0}", encodingAsString));
-            var encoding = CreateOrGetSupportedEncoding(formatter, encodingAsString, isDefaultEncoding);
+            ((SystemTextJsonOutputFormatter)formatter).SerializerOptions.ReferenceHandling = ReferenceHandling.Preserve;
+            var expectedContent = "{\"$id\":\"1\",\"name\":\"Person\",\"child\":{\"$id\":\"2\",\"name\":\"Child\",\"child\":null,\"parent\":{\"$ref\":\"1\"}},\"parent\":null}";
+            var person = new Person
+            {
+                Name = "Person",
+                Child = new Person { Name = "Child", },
+            };
+            person.Child.Parent = person;
 
+            var mediaType = MediaTypeHeaderValue.Parse("application/json; charset=utf-8");
+            var encoding = CreateOrGetSupportedEncoding(formatter, "utf-8", isDefaultEncoding: true);
 
             var body = new MemoryStream();
             var actionContext = GetActionContext(mediaType, body);
@@ -39,18 +43,70 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
             var outputFormatterContext = new OutputFormatterWriteContext(
                 actionContext.HttpContext,
                 new TestHttpResponseStreamWriterFactory().CreateWriter,
-                typeof(string),
-                content)
+                typeof(Person),
+                person)
             {
                 ContentType = new StringSegment(mediaType.ToString()),
             };
 
             // Act
-            await formatter.WriteResponseBodyAsync(outputFormatterContext, Encoding.GetEncoding(encodingAsString));
+            await formatter.WriteResponseBodyAsync(outputFormatterContext, Encoding.GetEncoding("utf-8"));
 
             // Assert
             var actualContent = encoding.GetString(body.ToArray());
-            Assert.Equal(expectedContent, actualContent, StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(expectedContent, actualContent);
+        }
+
+        [Fact]
+        public async Task WriteResponseBodyAsync_WithNonUtf8Encoding_FormattingErrorsAreThrown()
+        {
+            // Arrange
+            var formatter = GetOutputFormatter();
+            var mediaType = MediaTypeHeaderValue.Parse("application/json; charset=utf-16");
+            var encoding = CreateOrGetSupportedEncoding(formatter, "utf-16", isDefaultEncoding: true);
+
+            var body = new MemoryStream();
+            var actionContext = GetActionContext(mediaType, body);
+
+            var outputFormatterContext = new OutputFormatterWriteContext(
+                actionContext.HttpContext,
+                new TestHttpResponseStreamWriterFactory().CreateWriter,
+                typeof(Person),
+                new ThrowingFormatterModel())
+            {
+                ContentType = new StringSegment(mediaType.ToString()),
+            };
+
+            // Act & Assert
+            await Assert.ThrowsAsync<TimeZoneNotFoundException>(() => formatter.WriteResponseBodyAsync(outputFormatterContext, Encoding.GetEncoding("utf-16")));
+        }
+
+        private class Person
+        {
+            public string Name { get; set; }
+
+            public Person Child { get; set; }
+
+            public Person Parent { get; set; }
+        }
+
+        [JsonConverter(typeof(ThrowingFormatterPersonConverter))]
+        private class ThrowingFormatterModel
+        {
+
+        }
+
+        private class ThrowingFormatterPersonConverter : JsonConverter<ThrowingFormatterModel>
+        {
+            public override ThrowingFormatterModel Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            public override void Write(Utf8JsonWriter writer, ThrowingFormatterModel value, JsonSerializerOptions options)
+            {
+                throw new TimeZoneNotFoundException();
+            }
         }
     }
 }

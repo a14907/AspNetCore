@@ -20,6 +20,7 @@ namespace Microsoft.AspNetCore.Mvc.Routing
     internal class ActionEndpointFactory
     {
         private readonly RoutePatternTransformer _routePatternTransformer;
+        private readonly RequestDelegate _requestDelegate;
 
         public ActionEndpointFactory(RoutePatternTransformer routePatternTransformer)
         {
@@ -29,6 +30,7 @@ namespace Microsoft.AspNetCore.Mvc.Routing
             }
 
             _routePatternTransformer = routePatternTransformer;
+            _requestDelegate = CreateRequestDelegate();
         }
 
         public void AddEndpoints(
@@ -36,7 +38,8 @@ namespace Microsoft.AspNetCore.Mvc.Routing
             HashSet<string> routeNames,
             ActionDescriptor action,
             IReadOnlyList<ConventionalRouteEntry> routes,
-            IReadOnlyList<Action<EndpointBuilder>> conventions)
+            IReadOnlyList<Action<EndpointBuilder>> conventions,
+            bool createInertEndpoints)
         {
             if (endpoints == null)
             {
@@ -63,6 +66,26 @@ namespace Microsoft.AspNetCore.Mvc.Routing
                 throw new ArgumentNullException(nameof(conventions));
             }
 
+            if (createInertEndpoints)
+            {
+                var builder = new InertEndpointBuilder()
+                {
+                    DisplayName = action.DisplayName,
+                    RequestDelegate = _requestDelegate,
+                };
+                AddActionDataToBuilder(
+                    builder,
+                    routeNames,
+                    action,
+                    routeName: null,
+                    dataTokens: null,
+                    suppressLinkGeneration: false,
+                    suppressPathMatching: false,
+                    conventions,
+                    Array.Empty<Action<EndpointBuilder>>());
+                endpoints.Add(builder.Build());
+            }
+
             if (action.AttributeRouteInfo == null)
             {
                 // Check each of the conventional patterns to see if the action would be reachable.
@@ -81,18 +104,21 @@ namespace Microsoft.AspNetCore.Mvc.Routing
 
                     // We suppress link generation for each conventionally routed endpoint. We generate a single endpoint per-route
                     // to handle link generation.
-                    var builder = CreateEndpoint(
+                    var builder = new RouteEndpointBuilder(_requestDelegate, updatedRoutePattern, route.Order)
+                    {
+                        DisplayName = action.DisplayName,
+                    };
+                    AddActionDataToBuilder(
+                        builder,
                         routeNames,
                         action,
-                        updatedRoutePattern,
                         route.RouteName,
-                        route.Order,
                         route.DataTokens,
                         suppressLinkGeneration: true,
                         suppressPathMatching: false,
                         conventions,
                         route.Conventions);
-                    endpoints.Add(builder);
+                    endpoints.Add(builder.Build());
                 }
             }
             else
@@ -106,21 +132,31 @@ namespace Microsoft.AspNetCore.Mvc.Routing
                 var updatedRoutePattern = _routePatternTransformer.SubstituteRequiredValues(resolvedRoutePattern, resolvedRouteValues);
                 if (updatedRoutePattern == null)
                 {
-                    throw new InvalidOperationException("Failed to update route pattern with required values.");
+                    // This kind of thing can happen when a route pattern uses a *reserved* route value such as `action`.
+                    // See: https://github.com/dotnet/aspnetcore/issues/14789
+                    var formattedRouteKeys = string.Join(", ", resolvedRouteValues.Keys.Select(k => $"'{k}'"));
+                    throw new InvalidOperationException(
+                        $"Failed to update the route pattern '{resolvedRoutePattern.RawText}' with required route values. " +
+                        $"This can occur when the route pattern contains parameters with reserved names such as: {formattedRouteKeys} " +
+                        $"and also uses route constraints such as '{{action:int}}'. " +
+                        $"To fix this error, choose a different parmaeter name.");
                 }
 
-                var endpoint = CreateEndpoint(
+                var builder = new RouteEndpointBuilder(_requestDelegate, updatedRoutePattern, action.AttributeRouteInfo.Order)
+                {
+                    DisplayName = action.DisplayName,
+                };
+                AddActionDataToBuilder(
+                    builder,
                     routeNames,
                     action,
-                    updatedRoutePattern,
                     action.AttributeRouteInfo.Name,
-                    action.AttributeRouteInfo.Order,
                     dataTokens: null,
                     action.AttributeRouteInfo.SuppressLinkGeneration,
                     action.AttributeRouteInfo.SuppressPathMatching,
                     conventions,
                     perRouteConventions: Array.Empty<Action<EndpointBuilder>>());
-                endpoints.Add(endpoint);
+                endpoints.Add(builder.Build());
             }
         }
 
@@ -262,47 +298,17 @@ namespace Microsoft.AspNetCore.Mvc.Routing
             return (attributeRoutePattern, resolvedRequiredValues ?? action.RouteValues);
         }
 
-        private RouteEndpoint CreateEndpoint(
+        private void AddActionDataToBuilder(
+            EndpointBuilder builder,
             HashSet<string> routeNames,
             ActionDescriptor action,
-            RoutePattern routePattern,
             string routeName,
-            int order,
             RouteValueDictionary dataTokens,
             bool suppressLinkGeneration,
             bool suppressPathMatching,
             IReadOnlyList<Action<EndpointBuilder>> conventions,
             IReadOnlyList<Action<EndpointBuilder>> perRouteConventions)
         {
-
-            // We don't want to close over the retrieve the Invoker Factory in ActionEndpointFactory as
-            // that creates cycles in DI. Since we're creating this delegate at startup time
-            // we don't want to create all of the things we use at runtime until the action
-            // actually matches.
-            //
-            // The request delegate is already a closure here because we close over
-            // the action descriptor.
-            IActionInvokerFactory invokerFactory = null;
-
-            RequestDelegate requestDelegate = (context) =>
-            {
-                var routeData = context.GetRouteData();
-                var actionContext = new ActionContext(context, routeData, action);
-
-                if (invokerFactory == null)
-                {
-                    invokerFactory = context.RequestServices.GetRequiredService<IActionInvokerFactory>();
-                }
-
-                var invoker = invokerFactory.CreateInvoker(actionContext);
-                return invoker.InvokeAsync();
-            };
-
-            var builder = new RouteEndpointBuilder(requestDelegate, routePattern, order)
-            {
-                DisplayName = action.DisplayName,
-            };
-
             // Add action metadata first so it has a low precedence
             if (action.EndpointMetadata != null)
             {
@@ -326,9 +332,9 @@ namespace Microsoft.AspNetCore.Mvc.Routing
             // However, Endpoint Routing requires Endpoint Names to be unique.
             //
             // We can use the route name as the endpoint name if it's not set. Note that there's no
-            // attribute for this today so it's unlikley. Using endpoint name on a 
-            if (routeName != null && 
-                !suppressLinkGeneration && 
+            // attribute for this today so it's unlikley. Using endpoint name on a
+            if (routeName != null &&
+                !suppressLinkGeneration &&
                 routeNames.Add(routeName) &&
                 builder.Metadata.OfType<IEndpointNameMetadata>().LastOrDefault()?.EndpointName == null)
             {
@@ -397,8 +403,47 @@ namespace Microsoft.AspNetCore.Mvc.Routing
             {
                 perRouteConventions[i](builder);
             }
+        }
 
-            return (RouteEndpoint)builder.Build();
+        private static RequestDelegate CreateRequestDelegate()
+        {
+            // We don't want to close over the Invoker Factory in ActionEndpointFactory as
+            // that creates cycles in DI. Since we're creating this delegate at startup time
+            // we don't want to create all of the things we use at runtime until the action
+            // actually matches.
+            //
+            // The request delegate is already a closure here because we close over
+            // the action descriptor.
+            IActionInvokerFactory invokerFactory = null;
+
+            return (context) =>
+            {
+                var endpoint = context.GetEndpoint();
+                var dataTokens = endpoint.Metadata.GetMetadata<IDataTokensMetadata>();
+
+                var routeData = new RouteData();
+                routeData.PushState(router: null, context.Request.RouteValues, new RouteValueDictionary(dataTokens?.DataTokens));
+
+                // Don't close over the ActionDescriptor, that's not valid for pages.
+                var action = endpoint.Metadata.GetMetadata<ActionDescriptor>();
+                var actionContext = new ActionContext(context, routeData, action);
+
+                if (invokerFactory == null)
+                {
+                    invokerFactory = context.RequestServices.GetRequiredService<IActionInvokerFactory>();
+                }
+
+                var invoker = invokerFactory.CreateInvoker(actionContext);
+                return invoker.InvokeAsync();
+            };
+        }
+
+        private class InertEndpointBuilder : EndpointBuilder
+        {
+            public override Endpoint Build()
+            {
+                return new Endpoint(RequestDelegate, new EndpointMetadataCollection(Metadata), DisplayName);
+            }
         }
     }
 }

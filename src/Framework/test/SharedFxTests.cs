@@ -15,15 +15,19 @@ namespace Microsoft.AspNetCore
     {
         private readonly string _expectedTfm;
         private readonly string _expectedRid;
+        private readonly string _expectedVersionFileName;
         private readonly string _sharedFxRoot;
         private readonly ITestOutputHelper _output;
 
         public SharedFxTests(ITestOutputHelper output)
         {
             _output = output;
-            _expectedTfm = "netcoreapp" + TestData.GetSharedFxVersion().Substring(0, 3);
+            _expectedTfm = "net" + TestData.GetSharedFxVersion().Substring(0, 3);
             _expectedRid = TestData.GetSharedFxRuntimeIdentifier();
-            _sharedFxRoot = Path.Combine(TestData.GetTestDataValue("SharedFrameworkLayoutRoot"), "shared", "Microsoft.AspNetCore.App", TestData.GetSharedFxVersion());
+            _sharedFxRoot = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNET_RUNTIME_PATH"))
+                ? Path.Combine(TestData.GetTestDataValue("SharedFrameworkLayoutRoot"), "shared", TestData.GetTestDataValue("RuntimePackageVersion"))
+                : Environment.GetEnvironmentVariable("ASPNET_RUNTIME_PATH");
+            _expectedVersionFileName = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNET_RUNTIME_PATH")) ? ".version" : "Microsoft.AspNetCore.App.versions.txt";
         }
 
         [Fact]
@@ -65,6 +69,7 @@ namespace Microsoft.AspNetCore
 
             Assert.Equal("Microsoft.NETCore.App", (string)runtimeConfig["runtimeOptions"]["framework"]["name"]);
             Assert.Equal(_expectedTfm, (string)runtimeConfig["runtimeOptions"]["tfm"]);
+            Assert.Equal("LatestPatch", (string)runtimeConfig["runtimeOptions"]["rollForward"]);
 
             Assert.Equal(TestData.GetMicrosoftNETCoreAppPackageVersion(), (string)runtimeConfig["runtimeOptions"]["framework"]["version"]);
         }
@@ -76,7 +81,7 @@ namespace Microsoft.AspNetCore
 
             var target = $".NETCoreApp,Version=v{TestData.GetSharedFxVersion().Substring(0, 3)}/{_expectedRid}";
             var ridPackageId = $"Microsoft.AspNetCore.App.Runtime.{_expectedRid}";
-            var libraryId = $"{ridPackageId}/{TestData.GetSharedFxVersion()}";
+            var libraryId = $"{ridPackageId}/{TestData.GetTestDataValue("RuntimePackageVersion")}";
 
             AssertEx.FileExists(depsFilePath);
 
@@ -130,12 +135,12 @@ namespace Microsoft.AspNetCore
         [Fact]
         public void ItContainsVersionFile()
         {
-            var versionFile = Path.Combine(_sharedFxRoot, ".version");
+            var versionFile = Path.Combine(_sharedFxRoot, _expectedVersionFileName);
             AssertEx.FileExists(versionFile);
             var lines = File.ReadAllLines(versionFile);
             Assert.Equal(2, lines.Length);
             Assert.Equal(TestData.GetRepositoryCommit(), lines[0]);
-            Assert.Equal(TestData.GetSharedFxVersion(), lines[1]);
+            Assert.Equal(TestData.GetTestDataValue("RuntimePackageVersion"), lines[1]);
         }
     }
 }

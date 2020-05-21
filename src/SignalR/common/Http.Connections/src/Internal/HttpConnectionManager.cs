@@ -10,7 +10,6 @@ using System.IO.Pipelines;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Internal;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Internal;
@@ -19,7 +18,7 @@ using Microsoft.Extensions.Options;
 
 namespace Microsoft.AspNetCore.Http.Connections.Internal
 {
-    public partial class HttpConnectionManager
+    internal partial class HttpConnectionManager
     {
         // TODO: Consider making this configurable? At least for testing?
         private static readonly TimeSpan _heartbeatTickRate = TimeSpan.FromSeconds(1);
@@ -33,17 +32,13 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
         private readonly ILogger<HttpConnectionContext> _connectionLogger;
         private readonly TimeSpan _disconnectTimeout;
 
-        public HttpConnectionManager(ILoggerFactory loggerFactory, IHostApplicationLifetime appLifetime)
-            : this(loggerFactory, appLifetime, Options.Create(new ConnectionOptions() { DisconnectTimeout = ConnectionOptionsSetup.DefaultDisconectTimeout }))
-        {
-        }
-
         public HttpConnectionManager(ILoggerFactory loggerFactory, IHostApplicationLifetime appLifetime, IOptions<ConnectionOptions> connectionOptions)
         {
             _logger = loggerFactory.CreateLogger<HttpConnectionManager>();
             _connectionLogger = loggerFactory.CreateLogger<HttpConnectionContext>();
             _nextHeartbeat = new TimerAwaitable(_heartbeatTickRate, _heartbeatTickRate);
             _disconnectTimeout = connectionOptions.Value.DisconnectTimeout ?? ConnectionOptionsSetup.DefaultDisconectTimeout;
+
             // Register these last as the callbacks could run immediately
             appLifetime.ApplicationStarted.Register(() => Start());
             appLifetime.ApplicationStopping.Register(() => CloseConnections());
@@ -57,7 +52,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             _ = ExecuteTimerLoop();
         }
 
-        public bool TryGetConnection(string id, out HttpConnectionContext connection)
+        internal bool TryGetConnection(string id, out HttpConnectionContext connection)
         {
             connection = null;
 
@@ -69,7 +64,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             return false;
         }
 
-        public HttpConnectionContext CreateConnection()
+        internal HttpConnectionContext CreateConnection()
         {
             return CreateConnection(PipeOptions.Default, PipeOptions.Default);
         }
@@ -78,18 +73,28 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
         /// Creates a connection without Pipes setup to allow saving allocations until Pipes are needed.
         /// </summary>
         /// <returns></returns>
-        public HttpConnectionContext CreateConnection(PipeOptions transportPipeOptions, PipeOptions appPipeOptions)
+        internal HttpConnectionContext CreateConnection(PipeOptions transportPipeOptions, PipeOptions appPipeOptions, int negotiateVersion = 0)
         {
+            string connectionToken;
             var id = MakeNewConnectionId();
+            if (negotiateVersion > 0)
+            {
+                connectionToken = MakeNewConnectionId();
+            }
+            else
+            {
+                connectionToken = id;
+            }
 
             Log.CreatedNewConnection(_logger, id);
             var connectionTimer = HttpConnectionsEventSource.Log.ConnectionStart(id);
-            var connection = new HttpConnectionContext(id, _connectionLogger);
+            var connection = new HttpConnectionContext(id, connectionToken, _connectionLogger);
             var pair = DuplexPipe.CreateConnectionPair(transportPipeOptions, appPipeOptions);
             connection.Transport = pair.Application;
             connection.Application = pair.Transport;
 
-            _connections.TryAdd(id, (connection, connectionTimer));
+            _connections.TryAdd(connectionToken, (connection, connectionTimer));
+
             return connection;
         }
 
@@ -105,11 +110,10 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
 
         private static string MakeNewConnectionId()
         {
-            // TODO: Use Span when WebEncoders implements Span methods https://github.com/aspnet/Home/issues/2966
             // 128 bit buffer / 8 bits per byte = 16 bytes
-            var buffer = new byte[16];
-            _keyGenerator.GetBytes(buffer);
+            Span<byte> buffer = stackalloc byte[16];
             // Generate the id with RNGCrypto because we want a cryptographically random id, which GUID is not
+            _keyGenerator.GetBytes(buffer);
             return WebEncoders.Base64UrlEncode(buffer);
         }
 
@@ -146,20 +150,26 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
                 // Capture the connection state
                 var lastSeenUtc = connection.LastSeenUtcIfInactive;
 
+                var utcNow = DateTimeOffset.UtcNow;
                 // Once the decision has been made to dispose we don't check the status again
                 // But don't clean up connections while the debugger is attached.
-                if (!Debugger.IsAttached && lastSeenUtc.HasValue && (DateTimeOffset.UtcNow - lastSeenUtc.Value).TotalSeconds > _disconnectTimeout.TotalSeconds)
+                if (!Debugger.IsAttached && lastSeenUtc.HasValue && (utcNow - lastSeenUtc.Value).TotalSeconds > _disconnectTimeout.TotalSeconds)
                 {
                     Log.ConnectionTimedOut(_logger, connection.ConnectionId);
                     HttpConnectionsEventSource.Log.ConnectionTimedOut(connection.ConnectionId);
 
                     // This is most likely a long polling connection. The transport here ends because
-                    // a poll completed and has been inactive for > 5 seconds so we wait for the 
+                    // a poll completed and has been inactive for > 5 seconds so we wait for the
                     // application to finish gracefully
                     _ = DisposeAndRemoveAsync(connection, closeGracefully: true);
                 }
                 else
                 {
+                    if (!Debugger.IsAttached)
+                    {
+                        connection.TryCancelSend(utcNow.Ticks);
+                    }
+
                     // Tick the heartbeat, if the connection is still active
                     connection.TickHeartbeat();
                 }
@@ -184,7 +194,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
         }
 
-        public async Task DisposeAndRemoveAsync(HttpConnectionContext connection, bool closeGracefully)
+        internal async Task DisposeAndRemoveAsync(HttpConnectionContext connection, bool closeGracefully)
         {
             try
             {
@@ -206,7 +216,7 @@ namespace Microsoft.AspNetCore.Http.Connections.Internal
             {
                 // Remove it from the list after disposal so that's it's easy to see
                 // connections that might be in a hung state via the connections list
-                RemoveConnection(connection.ConnectionId);
+                RemoveConnection(connection.ConnectionToken);
             }
         }
     }

@@ -6,13 +6,11 @@ using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding.Metadata;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Xunit;
@@ -1265,11 +1263,12 @@ namespace Microsoft.AspNetCore.Mvc.ModelBinding.Validation
                 });
         }
 
-        [Fact]
-        public void Validate_Throws_IfValidationDepthExceedsMaxDepth()
+        [Theory]
+        [InlineData(1)]
+        [InlineData(5)]
+        public void Validate_Throws_IfValidationDepthExceedsMaxDepth(int maxDepth)
         {
             // Arrange
-            var maxDepth = 5;
             var expected = $"ValidationVisitor exceeded the maximum configured validation depth '{maxDepth}' when validating property '{nameof(DepthObject.Depth)}' on type '{typeof(DepthObject)}'. " +
                 "This may indicate a very deep or infinitely recursive object graph. Consider modifying 'MvcOptions.MaxValidationDepth' or suppressing validation on the model type.";
             _options.MaxValidationDepth = maxDepth;
@@ -1284,6 +1283,7 @@ namespace Microsoft.AspNetCore.Mvc.ModelBinding.Validation
             // Act & Assert
             var ex = Assert.Throws<InvalidOperationException>(() => validator.Validate(actionContext, validationState, prefix: string.Empty, model));
             Assert.Equal(expected, ex.Message);
+            Assert.Equal("https://aka.ms/AA21ue1", ex.HelpLink);
         }
 
         [Fact]
@@ -1306,26 +1306,59 @@ namespace Microsoft.AspNetCore.Mvc.ModelBinding.Validation
         }
 
         [Fact]
-        public void Validate_Throws_WithMaxDepth_1()
+        public void Validate_DoesNotThrow_IfNumberOfErrorsAfterReachingMaxAllowedErrors_GoesOverMaxDepth()
         {
             // Arrange
-            var maxDepth = 1;
-            var expected = $"ValidationVisitor exceeded the maximum configured validation depth '{maxDepth}' when validating property '{nameof(DepthObject.Depth)}' on type '{typeof(DepthObject)}'. " +
-                "This may indicate a very deep or infinitely recursive object graph. Consider modifying 'MvcOptions.MaxValidationDepth' or suppressing validation on the model type.";
+            var maxDepth = 4;
             _options.MaxValidationDepth = maxDepth;
             var actionContext = new ActionContext();
+            actionContext.ModelState.MaxAllowedErrors = 2;
             var validator = CreateValidator();
-            var model = new DepthObject(maxDepth + 1);
+            var model = new List<ModelWithRequiredProperty>
+            {
+                new ModelWithRequiredProperty(), new ModelWithRequiredProperty(),
+                // After the first 2 items we will reach MaxAllowedErrors
+                // If we add items without popping after having reached max validation,
+                // with 4 more items (on top of the list) we would go over max depth of 4
+                new ModelWithRequiredProperty(), new ModelWithRequiredProperty(),
+                new ModelWithRequiredProperty(), new ModelWithRequiredProperty(),
+            };
+
             var validationState = new ValidationStateDictionary
             {
                 { model, new ValidationStateEntry() }
             };
-            var method = GetType().GetMethod(nameof(Validate_Throws_ForTopLevelMetadataData), BindingFlags.NonPublic | BindingFlags.Instance);
 
             // Act & Assert
-            var ex = Assert.Throws<InvalidOperationException>(() => validator.Validate(actionContext, validationState, prefix: string.Empty, model));
-            Assert.Equal(expected, ex.Message);
-            Assert.NotNull(ex.HelpLink);
+            validator.Validate(actionContext, validationState, prefix: string.Empty, model);
+            Assert.False(actionContext.ModelState.IsValid);
+        }
+
+        [Theory]
+        [InlineData(false, ModelValidationState.Unvalidated)]
+        [InlineData(true, ModelValidationState.Invalid)]
+        public void Validate_RespectsMvcOptionsConfiguration_WhenChildValidationFails(bool optionValue, ModelValidationState expectedParentValidationState)
+        {
+            // Arrange
+            _options.ValidateComplexTypesIfChildValidationFails = optionValue;
+
+            var actionContext = new ActionContext();
+            var validationState = new ValidationStateDictionary();
+            var validator = CreateValidator();
+
+            var model = (object)new SelfValidatableModelContainer
+            {
+                IsParentValid = false,
+                ValidatableModelProperty = new ValidatableModel()
+            };
+
+            // Act
+            validator.Validate(actionContext, validationState, prefix: string.Empty, model);
+
+            // Assert
+            var modelState = actionContext.ModelState;
+            Assert.False(modelState.IsValid);
+            Assert.Equal(expectedParentValidationState, modelState.Root.ValidationState);
         }
 
         [Fact]
@@ -1415,6 +1448,12 @@ namespace Microsoft.AspNetCore.Mvc.ModelBinding.Validation
 
             entry = modelState["Property2"];
             Assert.Equal(ModelValidationState.Invalid, entry.ValidationState);
+        }
+
+        public class ModelWithRequiredProperty
+        {
+            [Required]
+            public string MyProperty { get; set; }
         }
 
         private class ModelWithoutValidation
@@ -1520,6 +1559,22 @@ namespace Microsoft.AspNetCore.Mvc.ModelBinding.Validation
         {
             [Display(Name = "Never valid")]
             public ValidatableModel ValidatableModelProperty { get; set; }
+        }
+
+        private class SelfValidatableModelContainer : IValidatableObject
+        {
+            public bool IsParentValid { get; set; } = true;
+
+            [Display(Name = "Never valid")]
+            public ValidatableModel ValidatableModelProperty { get; set; }
+
+            public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+            {
+                if (!IsParentValid)
+                {
+                    yield return new ValidationResult("Parent not valid");
+                }
+            }
         }
 
         private class TypeThatOverridesEquals

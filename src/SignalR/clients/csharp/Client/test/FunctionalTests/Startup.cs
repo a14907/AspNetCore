@@ -3,10 +3,12 @@
 
 using System;
 using System.IdentityModel.Tokens.Jwt;
+using System.IO;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.Routing;
@@ -49,6 +51,11 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
                                 IssuerSigningKey = SecurityKey
                             };
                     });
+
+            // Since tests run in parallel, it's possible multiple servers will startup and read files being written by another test
+            // Use a unique directory per server to avoid this collision
+            services.AddDataProtection()
+                .PersistKeysToFileSystem(Directory.CreateDirectory(Path.GetRandomFileName()));
         }
 
         public void Configure(IApplicationBuilder app)
@@ -68,6 +75,16 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
                       .RequireAuthorization(new AuthorizeAttribute(JwtBearerDefaults.AuthenticationScheme));
 
                 endpoints.MapHub<TestHub>("/default-nowebsockets", options => options.Transports = HttpTransportType.LongPolling | HttpTransportType.ServerSentEvents);
+
+                endpoints.MapHub<TestHub>("/negotiateProtocolVersion12", options =>
+                {
+                    options.MinimumProtocolVersion = 12;
+                });
+
+                endpoints.MapHub<TestHub>("/negotiateProtocolVersionNegative", options =>
+                {
+                    options.MinimumProtocolVersion = -1;
+                });
 
                 endpoints.MapGet("/generateJwtToken", context =>
                 {

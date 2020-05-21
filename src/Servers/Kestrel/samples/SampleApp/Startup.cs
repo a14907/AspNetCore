@@ -12,9 +12,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.AspNetCore.Server.Kestrel.Https.Internal;
-using Microsoft.AspNetCore.Server.Kestrel.Transport.Abstractions.Internal;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -37,7 +35,7 @@ namespace SampleApp
                 {
                     await next.Invoke();
                 }
-                catch (BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413RequestEntityTooLarge) { }
+                catch (Microsoft.AspNetCore.Http.BadHttpRequestException ex) when (ex.StatusCode == StatusCodes.Status413RequestEntityTooLarge) { }
             });
 
             app.Run(async context =>
@@ -73,8 +71,8 @@ namespace SampleApp
                 .ConfigureAppConfiguration((hostingContext, config) =>
                 {
                     var env = hostingContext.HostingEnvironment;
-                    config.AddJsonFile("appsettings.json", optional: true)
-                          .AddJsonFile($"appsettings.{env.EnvironmentName}.json", optional: true);
+                    config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                          .AddJsonFile($"appsettings.{env.EnvironmentName}.json", optional: true, reloadOnChange: true);
                 })
                 .UseKestrel((context, options) =>
                 {
@@ -85,18 +83,10 @@ namespace SampleApp
 
                     var basePort = context.Configuration.GetValue<int?>("BASE_PORT") ?? 5000;
 
-                    options.ConfigureEndpointDefaults(opt =>
-                    {
-                        opt.NoDelay = true;
-                    });
-
                     options.ConfigureHttpsDefaults(httpsOptions =>
                     {
                         httpsOptions.SslProtocols = SslProtocols.Tls12;
                     });
-
-                    // Run callbacks on the transport thread
-                    options.ApplicationSchedulingMode = SchedulingMode.Inline;
 
                     options.Listen(IPAddress.Loopback, basePort, listenOptions =>
                     {
@@ -144,11 +134,12 @@ namespace SampleApp
                         .LocalhostEndpoint(basePort + 7)
                         .Load();
 
+                    // reloadOnChange: true is the default
                     options
-                        .Configure(context.Configuration.GetSection("Kestrel"))
+                        .Configure(context.Configuration.GetSection("Kestrel"), reloadOnChange: true)
                         .Endpoint("NamedEndpoint", opt =>
                         {
-                            opt.ListenOptions.NoDelay = true;
+
                         })
                         .Endpoint("NamedHttpsEndpoint", opt =>
                         {

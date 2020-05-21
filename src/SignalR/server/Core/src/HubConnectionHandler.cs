@@ -7,8 +7,10 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Connections;
+using Microsoft.AspNetCore.Internal;
 using Microsoft.AspNetCore.SignalR.Internal;
 using Microsoft.AspNetCore.SignalR.Protocol;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -30,6 +32,9 @@ namespace Microsoft.AspNetCore.SignalR
         private readonly bool _enableDetailedErrors;
         private readonly long? _maximumMessageSize;
 
+        // Internal for testing
+        internal ISystemClock SystemClock { get; set; } = new SystemClock();
+
         /// <summary>
         /// Initializes a new instance of the <see cref="HubConnectionHandler{THub}"/> class.
         /// </summary>
@@ -39,7 +44,7 @@ namespace Microsoft.AspNetCore.SignalR
         /// <param name="hubOptions">Hub specific options used to initialize hubs. These options override the global options.</param>
         /// <param name="loggerFactory">The logger factory.</param>
         /// <param name="userIdProvider">The user ID provider used to get the user ID from a hub connection.</param>
-        /// <param name="dispatcher">The hub dispatcher used to dispatch incoming messages to hubs.</param>
+        /// <param name="serviceScopeFactory">The service scope factory.</param>
         /// <remarks>This class is typically created via dependency injection.</remarks>
         public HubConnectionHandler(HubLifetimeManager<THub> lifetimeManager,
                                     IHubProtocolResolver protocolResolver,
@@ -47,10 +52,8 @@ namespace Microsoft.AspNetCore.SignalR
                                     IOptions<HubOptions<THub>> hubOptions,
                                     ILoggerFactory loggerFactory,
                                     IUserIdProvider userIdProvider,
-#pragma warning disable PUB0001 // Pubternal type in public API
-                                    HubDispatcher<THub> dispatcher
-#pragma warning restore PUB0001
-                                    )
+                                    IServiceScopeFactory serviceScopeFactory
+        )
         {
             _protocolResolver = protocolResolver;
             _lifetimeManager = lifetimeManager;
@@ -59,30 +62,67 @@ namespace Microsoft.AspNetCore.SignalR
             _globalHubOptions = globalHubOptions.Value;
             _logger = loggerFactory.CreateLogger<HubConnectionHandler<THub>>();
             _userIdProvider = userIdProvider;
-            _dispatcher = dispatcher;
 
-            _enableDetailedErrors = _hubOptions.EnableDetailedErrors ?? _globalHubOptions.EnableDetailedErrors ?? false;
-            _maximumMessageSize = _hubOptions.MaximumReceiveMessageSize ?? _globalHubOptions.MaximumReceiveMessageSize;
+            _enableDetailedErrors = false;
+
+            List<IHubFilter> hubFilters = null;
+            if (_hubOptions.UserHasSetValues)
+            {
+                _maximumMessageSize = _hubOptions.MaximumReceiveMessageSize;
+                _enableDetailedErrors = _hubOptions.EnableDetailedErrors ?? _enableDetailedErrors;
+
+                if (_hubOptions.HubFilters != null)
+                {
+                    hubFilters = new List<IHubFilter>();
+                    hubFilters.AddRange(_hubOptions.HubFilters);
+                }
+            }
+            else
+            {
+                _maximumMessageSize = _globalHubOptions.MaximumReceiveMessageSize;
+                _enableDetailedErrors = _globalHubOptions.EnableDetailedErrors ?? _enableDetailedErrors;
+
+                if (_globalHubOptions.HubFilters != null)
+                {
+                    hubFilters = new List<IHubFilter>();
+                    hubFilters.AddRange(_globalHubOptions.HubFilters);
+                }
+            }
+
+            _dispatcher = new DefaultHubDispatcher<THub>(
+                serviceScopeFactory,
+                new HubContext<THub>(lifetimeManager),
+                _enableDetailedErrors,
+                new Logger<DefaultHubDispatcher<THub>>(loggerFactory),
+                hubFilters);
         }
 
         /// <inheritdoc />
         public override async Task OnConnectedAsync(ConnectionContext connection)
         {
             // We check to see if HubOptions<THub> are set because those take precedence over global hub options.
-            // Then set the keepAlive and handshakeTimeout values to the defaults in HubOptionsSetup incase they were explicitly set to null.
-            var keepAlive = _hubOptions.KeepAliveInterval ?? _globalHubOptions.KeepAliveInterval ?? HubOptionsSetup.DefaultKeepAliveInterval;
-            var clientTimeout = _hubOptions.ClientTimeoutInterval ?? _globalHubOptions.ClientTimeoutInterval ?? HubOptionsSetup.DefaultClientTimeoutInterval;
-            var handshakeTimeout = _hubOptions.HandshakeTimeout ?? _globalHubOptions.HandshakeTimeout ?? HubOptionsSetup.DefaultHandshakeTimeout;
-            var supportedProtocols = _hubOptions.SupportedProtocols ?? _globalHubOptions.SupportedProtocols;
+            // Then set the keepAlive and handshakeTimeout values to the defaults in HubOptionsSetup when they were explicitly set to null.
 
-            if (supportedProtocols != null && supportedProtocols.Count == 0)
+            var supportedProtocols = _hubOptions.SupportedProtocols ?? _globalHubOptions.SupportedProtocols;
+            if (supportedProtocols == null || supportedProtocols.Count == 0)
             {
                 throw new InvalidOperationException("There are no supported protocols");
             }
 
+            var handshakeTimeout = _hubOptions.HandshakeTimeout ?? _globalHubOptions.HandshakeTimeout ?? HubOptionsSetup.DefaultHandshakeTimeout;
+
+            var contextOptions = new HubConnectionContextOptions()
+            {
+                KeepAliveInterval = _hubOptions.KeepAliveInterval ?? _globalHubOptions.KeepAliveInterval ?? HubOptionsSetup.DefaultKeepAliveInterval,
+                ClientTimeoutInterval = _hubOptions.ClientTimeoutInterval ?? _globalHubOptions.ClientTimeoutInterval ?? HubOptionsSetup.DefaultClientTimeoutInterval,
+                StreamBufferCapacity = _hubOptions.StreamBufferCapacity ?? _globalHubOptions.StreamBufferCapacity ?? HubOptionsSetup.DefaultStreamBufferCapacity,
+                MaximumReceiveMessageSize = _maximumMessageSize,
+                SystemClock = SystemClock,
+            };
+
             Log.ConnectedStarting(_logger);
 
-            var connectionContext = new HubConnectionContext(connection, keepAlive, _loggerFactory, clientTimeout);
+            var connectionContext = new HubConnectionContext(connection, contextOptions, _loggerFactory);
 
             var resolvedSupportedProtocols = (supportedProtocols as IReadOnlyList<string>) ?? supportedProtocols.ToList();
             if (!await connectionContext.HandshakeAsync(handshakeTimeout, resolvedSupportedProtocols, _protocolResolver, _userIdProvider, _enableDetailedErrors))
@@ -114,7 +154,8 @@ namespace Microsoft.AspNetCore.SignalR
             {
                 Log.ErrorDispatchingHubEvent(_logger, "OnConnectedAsync", ex);
 
-                await SendCloseAsync(connection, ex);
+                // The client shouldn't try to reconnect given an error in OnConnected.
+                await SendCloseAsync(connection, ex, allowReconnect: false);
 
                 // return instead of throw to let close message send successfully
                 return;
@@ -145,7 +186,7 @@ namespace Microsoft.AspNetCore.SignalR
         private async Task HubOnDisconnectedAsync(HubConnectionContext connection, Exception exception)
         {
             // send close message before aborting the connection
-            await SendCloseAsync(connection, exception);
+            await SendCloseAsync(connection, exception, connection.AllowReconnect);
 
             // We wait on abort to complete, this is so that we can guarantee that all callbacks have fired
             // before OnDisconnectedAsync
@@ -164,14 +205,18 @@ namespace Microsoft.AspNetCore.SignalR
             }
         }
 
-        private async Task SendCloseAsync(HubConnectionContext connection, Exception exception)
+        private async Task SendCloseAsync(HubConnectionContext connection, Exception exception, bool allowReconnect)
         {
             var closeMessage = CloseMessage.Empty;
 
             if (exception != null)
             {
                 var errorMessage = ErrorMessageHelper.BuildErrorMessage("Connection closed with an error.", exception, _enableDetailedErrors);
-                closeMessage = new CloseMessage(errorMessage);
+                closeMessage = new CloseMessage(errorMessage, allowReconnect);
+            }
+            else if (allowReconnect)
+            {
+                closeMessage = new CloseMessage(error: null, allowReconnect);
             }
 
             try
@@ -188,6 +233,8 @@ namespace Microsoft.AspNetCore.SignalR
         {
             var input = connection.Input;
             var protocol = connection.Protocol;
+            connection.BeginClientTimeout();
+
 
             var binder = new HubConnectionBinder<THub>(_dispatcher, connection);
 
@@ -205,14 +252,20 @@ namespace Microsoft.AspNetCore.SignalR
 
                     if (!buffer.IsEmpty)
                     {
-                        connection.ResetClientTimeout();
-
+                        bool messageReceived = false;
                         // No message limit, just parse and dispatch
                         if (_maximumMessageSize == null)
                         {
                             while (protocol.TryParseMessage(ref buffer, binder, out var message))
                             {
+                                messageReceived = true;
+                                connection.StopClientTimeout();
                                 await _dispatcher.DispatchMessageAsync(connection, message);
+                            }
+
+                            if (messageReceived)
+                            {
+                                connection.BeginClientTimeout();
                             }
                         }
                         else
@@ -233,6 +286,9 @@ namespace Microsoft.AspNetCore.SignalR
 
                                 if (protocol.TryParseMessage(ref segment, binder, out var message))
                                 {
+                                    messageReceived = true;
+                                    connection.StopClientTimeout();
+
                                     await _dispatcher.DispatchMessageAsync(connection, message);
                                 }
                                 else if (overLength)
@@ -247,6 +303,11 @@ namespace Microsoft.AspNetCore.SignalR
 
                                 // Update the buffer to the remaining segment
                                 buffer = buffer.Slice(segment.Start);
+                            }
+
+                            if (messageReceived)
+                            {
+                                connection.BeginClientTimeout();
                             }
                         }
                     }
@@ -276,7 +337,7 @@ namespace Microsoft.AspNetCore.SignalR
                 LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "ErrorDispatchingHubEvent"), "Error when dispatching '{HubMethod}' on hub.");
 
             private static readonly Action<ILogger, Exception> _errorProcessingRequest =
-                LoggerMessage.Define(LogLevel.Error, new EventId(2, "ErrorProcessingRequest"), "Error when processing requests.");
+                LoggerMessage.Define(LogLevel.Debug, new EventId(2, "ErrorProcessingRequest"), "Error when processing requests.");
 
             private static readonly Action<ILogger, Exception> _abortFailed =
                 LoggerMessage.Define(LogLevel.Trace, new EventId(3, "AbortFailed"), "Abort callback failed.");

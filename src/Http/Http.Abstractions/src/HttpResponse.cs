@@ -45,9 +45,10 @@ namespace Microsoft.AspNetCore.Http
         public abstract Stream Body { get; set; }
 
         /// <summary>
-        /// Gets or sets the response body pipe <see cref="PipeWriter"/>
+        /// Gets the response body <see cref="PipeWriter"/>
         /// </summary>
-        public abstract PipeWriter BodyWriter { get; set; }
+        /// <value>The response body <see cref="PipeWriter"/>.</value>
+        public virtual PipeWriter BodyWriter { get => throw new NotImplementedException(); }
 
         /// <summary>
         /// Gets or sets the value for the <c>Content-Length</c> response header.
@@ -71,14 +72,26 @@ namespace Microsoft.AspNetCore.Http
 
         /// <summary>
         /// Adds a delegate to be invoked just before response headers will be sent to the client.
+        /// Callbacks registered here run in reverse order.
         /// </summary>
+        /// <remarks>
+        /// Callbacks registered here run in reverse order. The last one registered is invoked first.
+        /// The reverse order is done to replicate the way middleware works, with the inner-most middleware looking at the
+        /// response first.
+        /// </remarks>
         /// <param name="callback">The delegate to execute.</param>
         /// <param name="state">A state object to capture and pass back to the delegate.</param>
         public abstract void OnStarting(Func<object, Task> callback, object state);
 
         /// <summary>
         /// Adds a delegate to be invoked just before response headers will be sent to the client.
+        /// Callbacks registered here run in reverse order.
         /// </summary>
+        /// <remarks>
+        /// Callbacks registered here run in reverse order. The last one registered is invoked first.
+        /// The reverse order is done to replicate the way middleware works, with the inner-most middleware looking at the
+        /// response first.
+        /// </remarks>
         /// <param name="callback">The delegate to execute.</param>
         public virtual void OnStarting(Func<Task> callback) => OnStarting(_callbackDelegate, callback);
 
@@ -126,9 +139,13 @@ namespace Microsoft.AspNetCore.Http
         /// Starts the response by calling OnStarting() and making headers unmodifiable.
         /// </summary>
         /// <param name="cancellationToken"></param>
-        /// <remarks>
-        /// If the <see cref="IHttpResponseStartFeature"/> isn't set, StartAsync will default to calling HttpResponse.Body.FlushAsync().
-        /// </remarks>
-        public abstract Task StartAsync(CancellationToken cancellationToken = default);
+        public virtual Task StartAsync(CancellationToken cancellationToken = default) { throw new NotImplementedException(); }
+
+        /// <summary>
+        /// Flush any remaining response headers, data, or trailers.
+        /// This may throw if the response is in an invalid state such as a Content-Length mismatch.
+        /// </summary>
+        /// <returns></returns>
+        public virtual Task CompleteAsync() { throw new NotImplementedException(); }
     }
 }

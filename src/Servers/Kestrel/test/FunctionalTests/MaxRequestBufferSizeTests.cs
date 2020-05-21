@@ -14,7 +14,6 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
 using Microsoft.Extensions.Logging.Testing;
 using Xunit;
 
@@ -109,7 +108,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             }
         }
         [Theory]
-        [Flaky("https://github.com/aspnet/AspNetCore/issues/8054", FlakyOn.AzP.Windows)]
         [MemberData(nameof(LargeUploadData))]
         public async Task LargeUpload(long? maxRequestBufferSize, bool connectionAdapter, bool expectPause)
         {
@@ -289,7 +287,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             TaskCompletionSource<object> clientFinishedSendingRequestBody,
             Func<MemoryPool<byte>> memoryPoolFactory = null)
         {
-            var host = TransportSelector.GetWebHostBuilder(memoryPoolFactory)
+            var host = TransportSelector.GetWebHostBuilder(memoryPoolFactory, maxRequestBufferSize)
                 .ConfigureServices(AddTestLogging)
                 .UseKestrel(options =>
                 {
@@ -297,7 +295,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     {
                         if (useConnectionAdapter)
                         {
-                            listenOptions.ConnectionAdapters.Add(new PassThroughConnectionAdapter());
+                            listenOptions.UsePassThrough();
                         }
                     });
 

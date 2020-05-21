@@ -5,12 +5,14 @@ using System;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests.TestTransport;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.Logging.Testing;
 using Xunit;
+using BadHttpRequestException = Microsoft.AspNetCore.Server.Kestrel.Core.BadHttpRequestException;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
 {
@@ -21,12 +23,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
         {
             // 4 GiB
             var globalMaxRequestBodySize = 0x100000000;
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
                 var buffer = new byte[1];
+#pragma warning disable CS0618 // Type or member is obsolete
                 requestRejectedEx = await Assert.ThrowsAsync<BadHttpRequestException>(
+#pragma warning restore CS0618 // Type or member is obsolete
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
                 throw requestRejectedEx;
             },
@@ -61,7 +67,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
             var globalMaxRequestBodySize = 0x200000000;
             // 4 GiB
             var perRequestMaxRequestBodySize = 0x100000000;
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
@@ -72,7 +80,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
                 feature.MaxRequestBodySize = perRequestMaxRequestBodySize;
 
                 var buffer = new byte[1];
+#pragma warning disable CS0618 // Type or member is obsolete
                 requestRejectedEx = await Assert.ThrowsAsync<BadHttpRequestException>(
+#pragma warning restore CS0618 // Type or member is obsolete
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
                 throw requestRejectedEx;
             },
@@ -257,16 +267,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
         [Fact]
         public async Task EveryReadFailsWhenContentLengthHeaderExceedsGlobalLimit()
         {
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx1 = null;
             BadHttpRequestException requestRejectedEx2 = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
                 var buffer = new byte[1];
+#pragma warning disable CS0618 // Type or member is obsolete
                 requestRejectedEx1 = await Assert.ThrowsAsync<BadHttpRequestException>(
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
                 requestRejectedEx2 = await Assert.ThrowsAsync<BadHttpRequestException>(
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
+#pragma warning restore CS0618 // Type or member is obsolete
                 throw requestRejectedEx2;
             },
             new TestServiceContext(LoggerFactory) { ServerOptions = { Limits = { MaxRequestBodySize = 0 } } }))
@@ -300,12 +314,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
         {
             var chunkedPayload = "5;random chunk extension\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
             var globalMaxRequestBodySize = chunkedPayload.Length - 1;
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
                 var buffer = new byte[11];
+#pragma warning disable CS0618 // Type or member is obsolete
                 requestRejectedEx = await Assert.ThrowsAsync<BadHttpRequestException>(async () =>
+#pragma warning restore CS0618 // Type or member is obsolete
                 {
                     var count = 0;
                     do
@@ -360,7 +378,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
                 } while (count != 0);
 
                 Assert.Equal("Hello World", Encoding.ASCII.GetString(buffer));
-                Assert.Equal("trailing-value", context.Request.Headers["Trailing-Header"].ToString());
+                Assert.Equal("trailing-value", context.Request.GetTrailer("Trailing-Header").ToString());
             },
             new TestServiceContext(LoggerFactory) { ServerOptions = { Limits = { MaxRequestBodySize = globalMaxRequestBodySize } } }))
             {
@@ -388,7 +406,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
             var chunkedPayload = "5;random chunk extension\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
             var globalMaxRequestBodySize = chunkedPayload.Length - 1;
             var firstRequest = true;
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
@@ -410,7 +430,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
                 }
                 else
                 {
+#pragma warning disable CS0618 // Type or member is obsolete
                     requestRejectedEx = await Assert.ThrowsAsync<BadHttpRequestException>(async () =>
+#pragma warning restore CS0618 // Type or member is obsolete
                     {
                         do
                         {
@@ -456,16 +478,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
         [Fact]
         public async Task EveryReadFailsWhenChunkedPayloadExceedsGlobalLimit()
         {
+#pragma warning disable CS0618 // Type or member is obsolete
             BadHttpRequestException requestRejectedEx1 = null;
             BadHttpRequestException requestRejectedEx2 = null;
+#pragma warning restore CS0618 // Type or member is obsolete
 
             await using (var server = new TestServer(async context =>
             {
                 var buffer = new byte[1];
+#pragma warning disable CS0618 // Type or member is obsolete
                 requestRejectedEx1 = await Assert.ThrowsAsync<BadHttpRequestException>(
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
                 requestRejectedEx2 = await Assert.ThrowsAsync<BadHttpRequestException>(
                     async () => await context.Request.Body.ReadAsync(buffer, 0, 1));
+#pragma warning restore CS0618 // Type or member is obsolete
                 throw requestRejectedEx2;
             },
             new TestServiceContext(LoggerFactory) { ServerOptions = { Limits = { MaxRequestBodySize = 0 } } }))

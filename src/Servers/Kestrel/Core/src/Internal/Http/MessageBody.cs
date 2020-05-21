@@ -6,6 +6,7 @@ using System.IO.Pipelines;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 {
@@ -15,7 +16,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         private static readonly MessageBody _zeroContentLengthKeepAlive = new ZeroContentLengthMessageBody(keepAlive: true);
 
         private readonly HttpProtocol _context;
-        private readonly MinDataRate _minRequestBodyDataRate;
 
         private bool _send100Continue = true;
         private long _consumedBytes;
@@ -24,11 +24,11 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         protected bool _timingEnabled;
         protected bool _backpressure;
         protected long _alreadyTimedBytes;
+        protected long _examinedUnconsumedBytes;
 
-        protected MessageBody(HttpProtocol context, MinDataRate minRequestBodyDataRate)
+        protected MessageBody(HttpProtocol context)
         {
             _context = context;
-            _minRequestBodyDataRate = minRequestBodyDataRate;
         }
 
         public static MessageBody ZeroContentLengthClose => _zeroContentLengthClose;
@@ -48,8 +48,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
         public abstract void AdvanceTo(SequencePosition consumed, SequencePosition examined);
 
         public abstract bool TryRead(out ReadResult readResult);
-
-        public abstract void OnWriterCompleted(Action<Exception, object> callback, object state);
 
         public abstract void Complete(Exception exception);
 
@@ -75,6 +73,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
         protected virtual Task OnStopAsync() => Task.CompletedTask;
 
+        public virtual void Reset()
+        {
+            _send100Continue = true;
+            _consumedBytes = 0;
+            _stopped = false;
+            _timingEnabled = false;
+            _backpressure = false;
+            _alreadyTimedBytes = 0;
+            _examinedUnconsumedBytes = 0;
+        }
+
         protected void TryProduceContinue()
         {
             if (_send100Continue)
@@ -96,12 +105,17 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
             if (!RequestUpgrade)
             {
-                Log.RequestBodyStart(_context.ConnectionIdFeature, _context.TraceIdentifier);
+                // Accessing TraceIdentifier will lazy-allocate a string ID.
+                // Don't access TraceIdentifer unless logging is enabled.
+                if (Log.IsEnabled(LogLevel.Debug))
+                {
+                    Log.RequestBodyStart(_context.ConnectionIdFeature, _context.TraceIdentifier);
+                }
 
-                if (_minRequestBodyDataRate != null)
+                if (_context.MinRequestBodyDataRate != null)
                 {
                     _timingEnabled = true;
-                    _context.TimeoutControl.StartRequestBody(_minRequestBodyDataRate);
+                    _context.TimeoutControl.StartRequestBody(_context.MinRequestBodyDataRate);
                 }
             }
 
@@ -119,7 +133,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
             if (!RequestUpgrade)
             {
-                Log.RequestBodyDone(_context.ConnectionIdFeature, _context.TraceIdentifier);
+                // Accessing TraceIdentifier will lazy-allocate a string ID
+                // Don't access TraceIdentifer unless logging is enabled.
+                if (Log.IsEnabled(LogLevel.Debug))
+                {
+                    Log.RequestBodyDone(_context.ConnectionIdFeature, _context.TraceIdentifier);
+                }
 
                 if (_timingEnabled)
                 {
@@ -151,7 +170,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
 
             if (_consumedBytes > _context.MaxRequestBodySize)
             {
-                BadHttpRequestException.Throw(RequestRejectionReason.RequestBodyTooLarge);
+                KestrelBadHttpRequestException.Throw(RequestRejectionReason.RequestBodyTooLarge);
             }
         }
 
@@ -169,16 +188,82 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http
             return readAwaitable;
         }
 
-        protected void StopTimingRead(long bytesRead)
+        protected void CountBytesRead(long bytesInReadResult)
         {
-            _context.TimeoutControl.BytesRead(bytesRead - _alreadyTimedBytes);
-            _alreadyTimedBytes = 0;
+            var numFirstSeenBytes = bytesInReadResult - _alreadyTimedBytes;
+
+            if (numFirstSeenBytes > 0)
+            {
+                _context.TimeoutControl.BytesRead(numFirstSeenBytes);
+            }
+        }
+
+        protected void StopTimingRead(long bytesInReadResult)
+        {
+            CountBytesRead(bytesInReadResult);
 
             if (_backpressure)
             {
                 _backpressure = false;
                 _context.TimeoutControl.StopTimingRead();
             }
+        }
+
+        protected long OnAdvance(ReadResult readResult, SequencePosition consumed, SequencePosition examined)
+        {
+            // This code path is fairly hard to understand so let's break it down with an example
+            // ReadAsync returns a ReadResult of length 50.
+            // Advance(25, 40). The examined length would be 40 and consumed length would be 25.
+            // _totalExaminedInPreviousReadResult starts at 0. newlyExamined is 40.
+            // OnDataRead is called with length 40.
+            // _totalExaminedInPreviousReadResult is now 40 - 25 = 15.
+
+            // The next call to ReadAsync returns 50 again
+            // Advance(5, 5) is called
+            // newlyExamined is 5 - 15, or -10.
+            // Update _totalExaminedInPreviousReadResult to 10 as we consumed 5.
+
+            // The next call to ReadAsync returns 50 again
+            // _totalExaminedInPreviousReadResult is 10
+            // Advance(50, 50) is called
+            // newlyExamined = 50 - 10 = 40
+            // _totalExaminedInPreviousReadResult is now 50
+            // _totalExaminedInPreviousReadResult is finally 0 after subtracting consumedLength.
+
+            long examinedLength, consumedLength, totalLength;
+
+            if (consumed.Equals(examined))
+            {
+                examinedLength = readResult.Buffer.Slice(readResult.Buffer.Start, examined).Length;
+                consumedLength = examinedLength;
+            }
+            else
+            {
+                consumedLength = readResult.Buffer.Slice(readResult.Buffer.Start, consumed).Length;
+                examinedLength = consumedLength + readResult.Buffer.Slice(consumed, examined).Length;
+            }
+
+            if (examined.Equals(readResult.Buffer.End))
+            {
+                totalLength = examinedLength;
+            }
+            else
+            {
+                totalLength = readResult.Buffer.Length;
+            }
+
+            var newlyExamined = examinedLength - _examinedUnconsumedBytes;
+
+            if (newlyExamined > 0)
+            {
+                OnDataRead(newlyExamined);
+                _examinedUnconsumedBytes += newlyExamined;
+            }
+
+            _examinedUnconsumedBytes -= consumedLength;
+            _alreadyTimedBytes = totalLength - consumedLength;
+
+            return newlyExamined;
         }
     }
 }

@@ -4,7 +4,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Security.Claims;
@@ -28,7 +27,8 @@ namespace Microsoft.AspNetCore.Mvc
         public const string ActionFilter = "Action Filter";
         private static readonly string[] _noFilters = new[] { "None" };
 
-        private static readonly double TimestampToTicks = TimeSpan.TicksPerSecond / (double)Stopwatch.Frequency;
+        private static readonly Action<ILogger, string, string, Exception> _controllerFactoryExecuting;
+        private static readonly Action<ILogger, string, string, Exception> _controllerFactoryExecuted;
 
         private static readonly Action<ILogger, string, string, Exception> _actionExecuting;
         private static readonly Action<ILogger, string, MethodInfo, string, string, Exception> _controllerActionExecuting;
@@ -54,8 +54,8 @@ namespace Microsoft.AspNetCore.Mvc
         private static readonly Action<ILogger, string, Exception> _ambiguousActions;
         private static readonly Action<ILogger, string, string, IActionConstraint, Exception> _constraintMismatch;
 
-        private static readonly Action<ILogger, FileResult, string, string, Exception> _executingFileResult;
-        private static readonly Action<ILogger, FileResult, string, Exception> _executingFileResultWithNoFileName;
+        private static readonly Action<ILogger, string, string, string, Exception> _executingFileResult;
+        private static readonly Action<ILogger, string, string, Exception> _executingFileResultWithNoFileName;
         private static readonly Action<ILogger, Exception> _notEnabledForRangeProcessing;
         private static readonly Action<ILogger, Exception> _writingRangeToBody;
         private static readonly Action<ILogger, object, Exception> _authorizationFailure;
@@ -72,8 +72,8 @@ namespace Microsoft.AspNetCore.Mvc
 
         private static readonly Action<ILogger, string, Exception> _localRedirectResultExecuting;
 
-        private static readonly Action<ILogger, string, Exception> _objectResultExecuting;
-        private static readonly Action<ILogger, string, Exception> _noFormatter;
+        private static readonly Action<ILogger, string, string, Exception> _objectResultExecuting;
+        private static readonly Action<ILogger, IEnumerable<string>, Exception> _noFormatter;
         private static readonly Action<ILogger, IOutputFormatter, string, Exception> _formatterSelected;
         private static readonly Action<ILogger, string, Exception> _skippedContentNegotiation;
         private static readonly Action<ILogger, Exception> _noAcceptForNegotiation;
@@ -155,6 +155,16 @@ namespace Microsoft.AspNetCore.Mvc
 
         static MvcCoreLoggerExtensions()
         {
+            _controllerFactoryExecuting = LoggerMessage.Define<string, string>(
+                LogLevel.Debug,
+                new EventId(1, "ControllerFactoryExecuting"),
+                "Executing controller factory for controller {Controller} ({AssemblyName})");
+
+            _controllerFactoryExecuted = LoggerMessage.Define<string, string>(
+                LogLevel.Debug,
+                new EventId(2, "ControllerFactoryExecuted"),
+                "Executed controller factory for controller {Controller} ({AssemblyName})");
+
             _actionExecuting = LoggerMessage.Define<string, string>(
                 LogLevel.Information,
                 new EventId(1, "ActionExecuting"),
@@ -240,12 +250,12 @@ namespace Microsoft.AspNetCore.Mvc
                 new EventId(2, "ConstraintMismatch"),
                 "Action '{ActionName}' with id '{ActionId}' did not match the constraint '{ActionConstraint}'");
 
-            _executingFileResult = LoggerMessage.Define<FileResult, string, string>(
+            _executingFileResult = LoggerMessage.Define<string, string, string>(
                 LogLevel.Information,
                 new EventId(1, "ExecutingFileResult"),
                 "Executing {FileResultType}, sending file '{FileDownloadPath}' with download name '{FileDownloadName}' ...");
 
-            _executingFileResultWithNoFileName = LoggerMessage.Define<FileResult, string>(
+            _executingFileResultWithNoFileName = LoggerMessage.Define<string, string>(
                 LogLevel.Information,
                 new EventId(2, "ExecutingFileResultWithNoFileName"),
                 "Executing {FileResultType}, sending file with download name '{FileDownloadName}' ...");
@@ -300,15 +310,15 @@ namespace Microsoft.AspNetCore.Mvc
                 new EventId(1, "LocalRedirectResultExecuting"),
                 "Executing LocalRedirectResult, redirecting to {Destination}.");
 
-            _noFormatter = LoggerMessage.Define<string>(
+            _noFormatter = LoggerMessage.Define<IEnumerable<string>>(
                 LogLevel.Warning,
                 new EventId(1, "NoFormatter"),
-                "No output formatter was found for content type '{ContentType}' to write the response.");
+                "No output formatter was found for content types '{ContentTypes}' to write the response.");
 
-            _objectResultExecuting = LoggerMessage.Define<string>(
+            _objectResultExecuting = LoggerMessage.Define<string, string>(
                 LogLevel.Information,
                 new EventId(1, "ObjectResultExecuting"),
-                "Executing ObjectResult, writing value of type '{Type}'.");
+                "Executing {ObjectResultType}, writing value of type '{Type}'.");
 
             _formatterSelected = LoggerMessage.Define<IOutputFormatter, string>(
                 LogLevel.Debug,
@@ -695,10 +705,12 @@ namespace Microsoft.AspNetCore.Mvc
             _selectingFirstCanWriteFormatter(logger, null);
         }
 
-        public static IDisposable ActionScope(this ILogger logger, ActionDescriptor action)
+#nullable enable
+        public static IDisposable? ActionScope(this ILogger logger, ActionDescriptor action)
         {
             return logger.BeginScope(new ActionLogScope(action));
         }
+#nullable restore
 
         public static void ExecutingAction(this ILogger logger, ActionDescriptor action)
         {
@@ -712,13 +724,14 @@ namespace Microsoft.AspNetCore.Mvc
                 {
                     if (i == routeValues.Length - 1)
                     {
-                        stringBuilder.Append($"{routeKeys[i]} = \"{routeValues[i]}\"}}");
+                        stringBuilder.Append($"{routeKeys[i]} = \"{routeValues[i]}\"");
                     }
                     else
                     {
                         stringBuilder.Append($"{routeKeys[i]} = \"{routeValues[i]}\", ");
                     }
                 }
+                stringBuilder.Append("}");
 
                 if (action.RouteValues.TryGetValue("page", out var page) && page != null)
                 {
@@ -920,12 +933,20 @@ namespace Microsoft.AspNetCore.Mvc
 
         public static void ExecutingFileResult(this ILogger logger, FileResult fileResult)
         {
-            _executingFileResultWithNoFileName(logger, fileResult, fileResult.FileDownloadName, null);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                var fileResultType = fileResult.GetType().Name;
+                _executingFileResultWithNoFileName(logger, fileResultType, fileResult.FileDownloadName, null);
+            }
         }
 
         public static void ExecutingFileResult(this ILogger logger, FileResult fileResult, string fileName)
         {
-            _executingFileResult(logger, fileResult, fileName, fileResult.FileDownloadName, null);
+            if (logger.IsEnabled(LogLevel.Information))
+            {
+                var fileResultType = fileResult.GetType().Name;
+                _executingFileResult(logger, fileResultType, fileName, fileResult.FileDownloadName, null);
+            }
         }
 
         public static void NotEnabledForRangeProcessing(this ILogger logger)
@@ -1004,22 +1025,31 @@ namespace Microsoft.AspNetCore.Mvc
             _localRedirectResultExecuting(logger, destination, null);
         }
 
-        public static void ObjectResultExecuting(this ILogger logger, object value)
+        public static void ObjectResultExecuting(this ILogger logger, ObjectResult result, object value)
         {
             if (logger.IsEnabled(LogLevel.Information))
             {
-                var type = value == null ? "null" : value.GetType().FullName;
-                _objectResultExecuting(logger, type, null);
+                var objectResultType = result.GetType().Name;
+                var valueType = value == null ? "null" : value.GetType().FullName;
+                _objectResultExecuting(logger, objectResultType, valueType, null);
             }
         }
 
         public static void NoFormatter(
             this ILogger logger,
-            OutputFormatterCanWriteContext formatterContext)
+            OutputFormatterCanWriteContext context,
+            MediaTypeCollection contentTypes)
         {
             if (logger.IsEnabled(LogLevel.Warning))
             {
-                _noFormatter(logger, Convert.ToString(formatterContext.ContentType), null);
+                var considered = new List<string>(contentTypes);
+
+                if (context.ContentType.HasValue)
+                {
+                    considered.Add(Convert.ToString(context.ContentType));
+                }
+
+                _noFormatter(logger, considered, null);
             }
         }
 
@@ -1619,6 +1649,30 @@ namespace Microsoft.AspNetCore.Mvc
             }
 
             _logFilterExecutionPlan(logger, filterType, filterList, null);
+        }
+
+        public static void ExecutingControllerFactory(this ILogger logger, ControllerContext context)
+        {
+            if (!logger.IsEnabled(LogLevel.Debug))
+            {
+                return;
+            }
+
+            var controllerType = context.ActionDescriptor.ControllerTypeInfo.AsType();
+            var controllerName = TypeNameHelper.GetTypeDisplayName(controllerType);
+            _controllerFactoryExecuting(logger, controllerName, controllerType.Assembly.GetName().Name, null);
+        }
+
+        public static void ExecutedControllerFactory(this ILogger logger, ControllerContext context)
+        {
+            if (!logger.IsEnabled(LogLevel.Debug))
+            {
+                return;
+            }
+
+            var controllerType = context.ActionDescriptor.ControllerTypeInfo.AsType();
+            var controllerName = TypeNameHelper.GetTypeDisplayName(controllerType);
+            _controllerFactoryExecuted(logger, controllerName, controllerType.Assembly.GetName().Name, null);
         }
 
         private static string[] GetFilterList(IEnumerable<IFilterMetadata> filters)

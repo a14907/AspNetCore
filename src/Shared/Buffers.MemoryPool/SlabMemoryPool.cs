@@ -3,6 +3,7 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace System.Buffers
@@ -10,7 +11,7 @@ namespace System.Buffers
     /// <summary>
     /// Used to allocate and distribute re-usable blocks of memory.
     /// </summary>
-    internal class SlabMemoryPool : MemoryPool<byte>
+    internal sealed class SlabMemoryPool : MemoryPool<byte>
     {
         /// <summary>
         /// The size of a block. 4096 is chosen because most operating systems use 4k pages.
@@ -29,6 +30,11 @@ namespace System.Buffers
         /// larger values can be leased but they will be disposed after use rather than returned to the pool.
         /// </summary>
         public override int MaxBufferSize { get; } = _blockSize;
+
+        /// <summary>
+        /// The size of a block. 4096 is chosen because most operating systems use 4k pages.
+        /// </summary>
+        public static int BlockSize => _blockSize;
 
         /// <summary>
         /// 4096 * 32 gives you a slabLength of 128k contiguous bytes allocated per slab
@@ -105,7 +111,8 @@ namespace System.Buffers
             var slab = MemoryPoolSlab.Create(_slabLength);
             _slabs.Push(slab);
 
-            var basePtr = slab.NativePointer;
+            // Get the address for alignment
+            IntPtr basePtr = Marshal.UnsafeAddrOfPinnedArrayElement(slab.PinnedArray, 0);
             // Page align the blocks
             var offset = (int)((((ulong)basePtr + (uint)_blockSize - 1) & ~((uint)_blockSize - 1)) - (ulong)basePtr);
             // Ensure page aligned

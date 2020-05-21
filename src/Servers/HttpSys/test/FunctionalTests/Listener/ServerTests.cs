@@ -9,8 +9,9 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.HttpSys.Internal;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.HttpSys.Listener
@@ -38,10 +39,8 @@ namespace Microsoft.AspNetCore.Server.HttpSys.Listener
                     var ct = context.DisconnectToken;
                     Assert.True(ct.CanBeCanceled, "CanBeCanceled");
                     ct.Register(() => canceled.SetResult(0));
-                    Assert.True(ct.WaitHandle.WaitOne(interval));
-                    Assert.True(ct.IsCancellationRequested, "IsCancellationRequested");
-
                     await canceled.Task.TimeoutAfter(interval);
+                    Assert.True(ct.IsCancellationRequested, "IsCancellationRequested");
 
                     context.Dispose();
                 }
@@ -71,7 +70,6 @@ namespace Microsoft.AspNetCore.Server.HttpSys.Listener
                     var ct = context.DisconnectToken;
                     Assert.False(ct.CanBeCanceled, "CanBeCanceled");
                     ct.Register(() => canceled.SetResult(0));
-                    Assert.False(ct.WaitHandle.WaitOne(interval));
                     Assert.False(ct.IsCancellationRequested, "IsCancellationRequested");
 
                     Assert.False(canceled.Task.IsCompleted, "canceled");
@@ -125,6 +123,20 @@ namespace Microsoft.AspNetCore.Server.HttpSys.Listener
                 var response = await responseTask;
                 Assert.Equal(string.Empty, response);
             }
+        }
+
+        [ConditionalFact]
+        [SkipOnHelix("https://github.com/dotnet/aspnetcore/pull/20718#issuecomment-618758634")]
+        public void Server_RegisterUnavailablePrefix_ThrowsActionableHttpSysException()
+        {
+            var options = new HttpSysOptions();
+            options.UrlPrefixes.Add(UrlPrefix.Create("http", "example.org", "8080", ""));
+            var listener = new HttpSysListener(options, new LoggerFactory());
+
+            var exception = Assert.Throws<HttpSysException>(() => listener.Start());
+
+            Assert.Equal((int)UnsafeNclNativeMethods.ErrorCodes.ERROR_ACCESS_DENIED, exception.ErrorCode);
+            Assert.Contains($@"netsh http add urlacl url=http://example.org:8080/ user={Environment.UserDomainName}\{Environment.UserName}", exception.Message);
         }
 
         [ConditionalFact]

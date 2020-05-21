@@ -38,6 +38,15 @@ function _killSeleniumTrackedProcesses() {
     }
 }
 
+function _listProcesses($processName) {
+    $processes = Get-WmiObject win32_process -Filter "name like '%$processName'" -ErrorAction SilentlyContinue;
+    if ($processes) {
+        Write-Host "These processes will be killed..."
+        $processes | select commandline | Out-String -Width 800
+    }
+}
+
+_listProcesses dotnet
 _kill dotnet.exe
 _kill testhost.exe
 _kill iisexpress.exe
@@ -45,13 +54,17 @@ _kill iisexpresstray.exe
 _kill w3wp.exe
 _kill msbuild.exe
 _kill vbcscompiler.exe
-_kill git.exe
 _kill vctip.exe
-_kill chrome.exe
 _kill h2spec.exe
 _kill WerFault.exe
 _killJavaInstances
 _killSeleniumTrackedProcesses
+
+# Special case these. When testing with -ci locally, you typically don't actually want to kill your browser or git command line
+if ($env:TF_BUILD) {
+    _kill chrome.exe
+    _kill git.exe
+}
 
 if (Get-Command iisreset -ErrorAction ignore) {
     iisreset /restart

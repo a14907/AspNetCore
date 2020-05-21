@@ -8,12 +8,14 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore.Internal;
 using Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore.Views;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
@@ -131,8 +133,36 @@ namespace Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore
                             {
                                 var databaseExists = await relationalDatabaseCreator.ExistsAsync();
 
+                                if (databaseExists)
+                                {
+                                    databaseExists = await relationalDatabaseCreator.HasTablesAsync();
+                                }
+
                                 var migrationsAssembly = context.GetService<IMigrationsAssembly>();
                                 var modelDiffer = context.GetService<IMigrationsModelDiffer>();
+
+                                var snapshotModel = migrationsAssembly.ModelSnapshot?.Model;
+                                if (snapshotModel is IConventionModel conventionModel)
+                                {
+                                    var conventionSet = context.GetService<IConventionSetBuilder>().CreateConventionSet();
+
+                                    var typeMappingConvention = conventionSet.ModelFinalizingConventions.OfType<TypeMappingConvention>().FirstOrDefault();
+                                    if (typeMappingConvention != null)
+                                    {
+                                        typeMappingConvention.ProcessModelFinalizing(conventionModel.Builder, null);
+                                    }
+
+                                    var relationalModelConvention = conventionSet.ModelFinalizedConventions.OfType<RelationalModelConvention>().FirstOrDefault();
+                                    if (relationalModelConvention != null)
+                                    {
+                                        snapshotModel = relationalModelConvention.ProcessModelFinalized(conventionModel);
+                                    }
+                                }
+
+                                if (snapshotModel is IMutableModel mutableModel)
+                                {
+                                    snapshotModel = mutableModel.FinalizeModel();
+                                }
 
                                 // HasDifferences will return true if there is no model snapshot, but if there is an existing database
                                 // and no model snapshot then we don't want to show the error page since they are most likely targeting
@@ -140,7 +170,7 @@ namespace Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore
 
                                 var pendingModelChanges
                                     = (!databaseExists || migrationsAssembly.ModelSnapshot != null)
-                                      && modelDiffer.HasDifferences(migrationsAssembly.ModelSnapshot?.Model, context.Model);
+                                      && modelDiffer.HasDifferences(snapshotModel?.GetRelationalModel(), context.Model.GetRelationalModel());
 
                                 var pendingMigrations
                                     = (databaseExists
@@ -148,7 +178,7 @@ namespace Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore
                                         : context.Database.GetMigrations())
                                     .ToArray();
 
-                                if (pendingModelChanges || pendingMigrations.Any())
+                                if (pendingModelChanges || pendingMigrations.Length > 0)
                                 {
                                     var page = new DatabaseErrorPage
                                     {

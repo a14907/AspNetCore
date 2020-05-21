@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Security.Claims;
 using System.Threading.Tasks;
+using Identity.DefaultUI.WebSite;
 using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,7 +16,7 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
         where TStartup : class
         where TContext : DbContext
     {
-        public RegistrationTests(ServerFactory<TStartup, TContext> serverFactory)
+        protected RegistrationTests(ServerFactory<TStartup, TContext> serverFactory)
         {
             ServerFactory = serverFactory;
         }
@@ -130,6 +132,54 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
         }
 
         [Fact]
+        public async Task CanRegisterWithASocialLoginProviderFromLoginWithConfirmation()
+        {
+            // Arrange
+            void ConfigureTestServices(IServiceCollection services)
+            {
+                services.Configure<IdentityOptions>(o => o.SignIn.RequireConfirmedAccount = true)
+                        .SetupTestThirdPartyLogin();
+            }
+
+            var client = ServerFactory
+                .WithWebHostBuilder(whb => whb.ConfigureServices(ConfigureTestServices))
+                .CreateClient();
+
+            var guid = Guid.NewGuid();
+            var userName = $"{guid}";
+            var email = $"{guid}@example.com";
+
+            // Act & Assert
+            await UserStories.RegisterNewUserWithSocialLoginWithConfirmationAsync(client, userName, email);
+        }
+
+        [Fact]
+        public async Task CanRegisterWithASocialLoginProviderFromLoginWithConfirmationAndRealEmailSender()
+        {
+            // Arrange
+            var emailSender = new ContosoEmailSender();
+            void ConfigureTestServices(IServiceCollection services)
+            {
+                services.SetupTestEmailSender(emailSender);
+                services
+                        .Configure<IdentityOptions>(o => o.SignIn.RequireConfirmedAccount = true)
+                        .SetupTestThirdPartyLogin();
+            }
+
+            var client = ServerFactory
+                .WithWebHostBuilder(whb => whb.ConfigureServices(ConfigureTestServices))
+                .CreateClient();
+
+            var guid = Guid.NewGuid();
+            var userName = $"{guid}";
+            var email = $"{guid}@example.com";
+
+            // Act & Assert
+            await UserStories.RegisterNewUserWithSocialLoginWithConfirmationAsync(client, userName, email, hasRealEmailSender: true);
+            Assert.Single(emailSender.SentEmails);
+        }
+
+        [Fact]
         public async Task CanRegisterWithASocialLoginProviderFromRegister()
         {
             // Arrange
@@ -168,6 +218,32 @@ namespace Microsoft.AspNetCore.Identity.FunctionalTests
 
             // Act & Assert
             await UserStories.RegisterNewUserWithSocialLoginAsync(client, userName, email);
+        }
+
+        [Fact]
+        public async Task RegisterWithASocialLoginProviderSetsAuthenticationMethodClaim()
+        {
+            // Arrange
+            string authenticationMethod = null;
+
+            void ConfigureTestServices(IServiceCollection services) =>
+                services
+                    .SetupTestThirdPartyLogin()
+                    .SetupGetUserClaimsPrincipal(user =>
+                        authenticationMethod = user.FindFirstValue(ClaimTypes.AuthenticationMethod), IdentityConstants.ApplicationScheme);
+
+            var client = ServerFactory
+                .WithWebHostBuilder(whb => whb.ConfigureServices(ConfigureTestServices))
+                .CreateClient();
+
+            var guid = Guid.NewGuid();
+            var userName = $"{guid}";
+            var email = $"{guid}@example.com";
+
+            // Act & Assert
+            await UserStories.RegisterNewUserWithSocialLoginAsync(client, userName, email);
+
+            Assert.Equal("Contoso", authenticationMethod);
         }
     }
 }

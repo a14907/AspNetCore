@@ -1,9 +1,10 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
+// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System;
 using System.Net;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Testing;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -22,7 +23,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         public void LocalHostListenOptionsClonesConnectionMiddleware()
         {
             var localhostListenOptions = new LocalhostListenOptions(1004);
-            localhostListenOptions.ConnectionAdapters.Add(new PassThroughConnectionAdapter());
             var serviceProvider = new ServiceCollection().BuildServiceProvider();
             localhostListenOptions.KestrelServerOptions = new KestrelServerOptions
             {
@@ -45,7 +45,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
             Assert.NotNull(clone.KestrelServerOptions);
             Assert.NotNull(serviceProvider);
             Assert.Same(serviceProvider, clone.ApplicationServices);
-            Assert.Single(clone.ConnectionAdapters);
+        }
+
+        [Fact]
+        public void ListenOptionsSupportsAnyEndPoint()
+        {
+            var listenOptions = new ListenOptions(new UriEndPoint(new Uri("http://127.0.0.1:5555")));
+            Assert.IsType<UriEndPoint>(listenOptions.EndPoint);
+            Assert.Equal("http://127.0.0.1:5555/", ((UriEndPoint)listenOptions.EndPoint).Uri.ToString());
         }
     }
 }

@@ -26,6 +26,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Microsoft.AspNetCore.Server.IIS.Core
 {
+    using BadHttpRequestException = Microsoft.AspNetCore.Http.BadHttpRequestException;
+
     internal abstract partial class IISHttpContext : NativeRequestContext, IThreadPoolWorkItem, IDisposable
     {
         private const int MinAllocBufferSize = 2048;
@@ -39,7 +41,6 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
         protected Streams _streams;
 
         private volatile bool _hasResponseStarted;
-        private volatile bool _hasRequestReadingStarted;
 
         private int _statusCode;
         private string _reasonPhrase;
@@ -50,6 +51,8 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
         protected Stack<KeyValuePair<Func<object, Task>, object>> _onCompleted;
 
         protected Exception _applicationException;
+        protected BadHttpRequestException _requestRejectedException;
+
         private readonly MemoryPool<byte> _memoryPool;
         private readonly IISHttpServer _server;
 
@@ -104,6 +107,7 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
         internal WindowsPrincipal WindowsUser { get; set; }
         public Stream RequestBody { get; set; }
         public Stream ResponseBody { get; set; }
+        public PipeWriter ResponsePipeWrapper { get; set; }
 
         protected IAsyncIOEngine AsyncIO { get; set; }
 
@@ -111,6 +115,9 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
         public IHeaderDictionary ResponseHeaders { get; set; }
         private HeaderCollection HttpResponseHeaders { get; set; }
         internal HttpApiTypes.HTTP_VERB KnownMethod { get; private set; }
+
+        private bool HasStartedConsumingRequestBody { get; set; }
+        public long? MaxRequestBodySize { get; set; }
 
         protected void InitializeContext()
         {
@@ -155,6 +162,8 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
                     User = WindowsUser;
                 }
             }
+
+            MaxRequestBodySize = _options.MaxRequestBodySize;
 
             ResetFeatureCollection();
 
@@ -282,9 +291,14 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
 
         private void InitializeRequestIO()
         {
-            Debug.Assert(!_hasRequestReadingStarted);
+            Debug.Assert(!HasStartedConsumingRequestBody);
 
-            _hasRequestReadingStarted = true;
+            if (RequestHeaders.ContentLength > MaxRequestBodySize)
+            {
+                IISBadHttpRequestException.Throw(RequestRejectionReason.RequestBodyTooLarge);
+            }
+
+            HasStartedConsumingRequestBody = true;
 
             EnsureIOInitialized();
 
@@ -308,7 +322,7 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
 
         protected Task ProduceEnd()
         {
-            if (_applicationException != null)
+            if (_requestRejectedException != null || _applicationException != null)
             {
                 if (HasResponseStarted)
                 {
@@ -318,6 +332,10 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
 
                 // If the request was rejected, the error state has already been set by SetBadRequestState and
                 // that should take precedence.
+                if (_requestRejectedException != null)
+                {
+                    SetErrorResponseException(_requestRejectedException);
+                }
                 else
                 {
                     // 500 Internal Server Error
@@ -358,9 +376,20 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
             foreach (var headerPair in HttpResponseHeaders)
             {
                 var headerValues = headerPair.Value;
+
+                if (headerPair.Value.Count == 0)
+                {
+                    continue;
+                }
+
                 var knownHeaderIndex = HttpApiTypes.HTTP_RESPONSE_HEADER_ID.IndexOfKnownHeader(headerPair.Key);
                 for (var i = 0; i < headerValues.Count; i++)
                 {
+                    if (string.IsNullOrEmpty(headerValues[i]))
+                    {
+                        continue;
+                    }
+
                     var isFirst = i == 0;
                     var headerValueBytes = Encoding.UTF8.GetBytes(headerValues[i]);
                     fixed (byte* pHeaderValue = headerValueBytes)
@@ -459,6 +488,23 @@ namespace Microsoft.AspNetCore.Server.IIS.Core
                     }
                 }
             }
+        }
+
+        public void SetBadRequestState(BadHttpRequestException ex)
+        {
+            Log.ConnectionBadRequest(_logger, RequestConnectionId, ex);
+
+            if (!HasResponseStarted)
+            {
+                SetErrorResponseException(ex);
+            }
+
+            _requestRejectedException = ex;
+        }
+
+        private void SetErrorResponseException(BadHttpRequestException ex)
+        {
+            SetErrorResponseHeaders(ex.StatusCode);
         }
 
         protected void ReportApplicationError(Exception ex)

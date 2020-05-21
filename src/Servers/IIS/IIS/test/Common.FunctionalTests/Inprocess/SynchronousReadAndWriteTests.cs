@@ -6,10 +6,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Testing.xunit;
+using Microsoft.AspNetCore.Testing;
 using Xunit;
 
-namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
+namespace Microsoft.AspNetCore.Server.IIS.FunctionalTests.InProcess
 {
     [Collection(IISTestSiteCollection.Name)]
     public class SynchronousReadAndWriteTests: FixtureLoggedTest
@@ -22,6 +22,7 @@ namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
         }
 
         [ConditionalFact]
+        [QuarantinedTest("https://github.com/dotnet/aspnetcore/issues/7341")]
         public async Task ReadAndWriteSynchronously()
         {
             for (int i = 0; i < 100; i++)

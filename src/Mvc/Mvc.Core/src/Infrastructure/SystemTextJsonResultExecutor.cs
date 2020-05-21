@@ -2,14 +2,12 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
-using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text;
-using System.Text.Json.Serialization;
+using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Core;
 using Microsoft.AspNetCore.Mvc.Formatters;
-using Microsoft.AspNetCore.Mvc.Formatters.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
@@ -23,15 +21,18 @@ namespace Microsoft.AspNetCore.Mvc.Infrastructure
             Encoding = Encoding.UTF8
         }.ToString();
 
-        private readonly MvcOptions _mvcOptions;
+        private readonly JsonOptions _options;
         private readonly ILogger<SystemTextJsonResultExecutor> _logger;
+        private readonly AsyncEnumerableReader _asyncEnumerableReaderFactory;
 
         public SystemTextJsonResultExecutor(
-            IOptions<MvcOptions> mvcOptions,
-            ILogger<SystemTextJsonResultExecutor> logger)
+            IOptions<JsonOptions> options,
+            ILogger<SystemTextJsonResultExecutor> logger,
+            IOptions<MvcOptions> mvcOptions)
         {
-            _mvcOptions = mvcOptions.Value;
+            _options = options.Value;
             _logger = logger;
+            _asyncEnumerableReaderFactory = new AsyncEnumerableReader(mvcOptions.Value);
         }
 
         public async Task ExecuteAsync(ActionContext context, JsonResult result)
@@ -66,33 +67,54 @@ namespace Microsoft.AspNetCore.Mvc.Infrastructure
 
             Log.JsonResultExecuting(_logger, result.Value);
 
-            // Keep this code in sync with SystemTextJsonOutputFormatter
-            var writeStream = GetWriteStream(context.HttpContext, resolvedContentTypeEncoding);
-            try
+            var value = result.Value;
+            if (value != null && _asyncEnumerableReaderFactory.TryGetReader(value.GetType(), out var reader))
             {
-                var type = result.Value?.GetType() ?? typeof(object);
-                await JsonSerializer.WriteAsync(result.Value, type, writeStream, jsonSerializerOptions);
-                await writeStream.FlushAsync();
+                Log.BufferingAsyncEnumerable(_logger, value);
+                value = await reader(value);
             }
-            finally
+
+            var objectType = value?.GetType() ?? typeof(object);
+
+            // Keep this code in sync with SystemTextJsonOutputFormatter
+            var responseStream = response.Body;
+            if (resolvedContentTypeEncoding.CodePage == Encoding.UTF8.CodePage)
             {
-                if (writeStream is TranscodingWriteStream transcoding)
+                await JsonSerializer.SerializeAsync(responseStream, value, objectType, jsonSerializerOptions);
+                await responseStream.FlushAsync();
+            }
+            else
+            {
+                // JsonSerializer only emits UTF8 encoded output, but we need to write the response in the encoding specified by
+                // selectedEncoding
+                var transcodingStream = Encoding.CreateTranscodingStream(response.Body, resolvedContentTypeEncoding, Encoding.UTF8, leaveOpen: true);
+
+                ExceptionDispatchInfo exceptionDispatchInfo = null;
+                try
                 {
-                    await transcoding.DisposeAsync();
+                    await JsonSerializer.SerializeAsync(transcodingStream, value, objectType, jsonSerializerOptions);
+                    await transcodingStream.FlushAsync();
+                }
+                catch (Exception ex)
+                {
+                    // TranscodingStream may write to the inner stream as part of it's disposal.
+                    // We do not want this exception "ex" to be eclipsed by any exception encountered during the write. We will stash it and
+                    // explicitly rethrow it during the finally block.
+                    exceptionDispatchInfo = ExceptionDispatchInfo.Capture(ex);
+                }
+                finally
+                {
+                    try
+                    {
+                        await transcodingStream.DisposeAsync();
+                    }
+                    catch when (exceptionDispatchInfo != null)
+                    {
+                    }
+
+                    exceptionDispatchInfo?.Throw();
                 }
             }
-        }
-
-        private Stream GetWriteStream(HttpContext httpContext, Encoding selectedEncoding)
-        {
-            if (selectedEncoding.CodePage == Encoding.UTF8.CodePage)
-            {
-                // JsonSerializer does not write a BOM. Therefore we do not have to handle it
-                // in any special way.
-                return httpContext.Response.Body;
-            }
-
-            return new TranscodingWriteStream(httpContext.Response.Body, selectedEncoding);
         }
 
         private JsonSerializerOptions GetSerializerOptions(JsonResult result)
@@ -100,7 +122,7 @@ namespace Microsoft.AspNetCore.Mvc.Infrastructure
             var serializerSettings = result.SerializerSettings;
             if (serializerSettings == null)
             {
-                return _mvcOptions.SerializerOptions;
+                return _options.JsonSerializerOptions;
             }
             else
             {
@@ -123,11 +145,19 @@ namespace Microsoft.AspNetCore.Mvc.Infrastructure
                 new EventId(1, "JsonResultExecuting"),
                 "Executing JsonResult, writing value of type '{Type}'.");
 
+            private static readonly Action<ILogger, string, Exception> _bufferingAsyncEnumerable = LoggerMessage.Define<string>(
+               LogLevel.Debug,
+               new EventId(2, "BufferingAsyncEnumerable"),
+               "Buffering IAsyncEnumerable instance of type '{Type}'.");
+
             public static void JsonResultExecuting(ILogger logger, object value)
             {
                 var type = value == null ? "null" : value.GetType().FullName;
                 _jsonResultExecuting(logger, type, null);
             }
+
+            public static void BufferingAsyncEnumerable(ILogger logger, object asyncEnumerable)
+                => _bufferingAsyncEnumerable(logger, asyncEnumerable.GetType().FullName, null);
         }
     }
 }

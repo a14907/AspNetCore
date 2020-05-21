@@ -45,6 +45,8 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
 
         public ChannelReader<int> StreamEchoInt(ChannelReader<int> source) => TestHubMethodsImpl.StreamEchoInt(source);
 
+        public IAsyncEnumerable<int> StreamIAsyncConsumer(IAsyncEnumerable<int> source) => source;
+
         public string GetUserIdentifier()
         {
             return Context.UserIdentifier;
@@ -93,6 +95,33 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
         {
             return Context.Features.Get<IHttpTransportFeature>().TransportType.ToString();
         }
+
+        public async Task CallWithUnserializableObject()
+        {
+            await Clients.All.SendAsync("Foo", Unserializable.Create());
+        }
+
+        public Unserializable GetUnserializableObject()
+        {
+            return Unserializable.Create();
+        }
+
+        public class Unserializable
+        {
+            public Unserializable Child { get; private set; }
+
+            private Unserializable()
+            {
+            }
+
+            internal static Unserializable Create()
+            {
+                // Loops throw off every serializer ;).
+                var o = new Unserializable();
+                o.Child = o;
+                return o;
+            }
+        }
     }
 
     public class DynamicTestHub : DynamicHub
@@ -125,6 +154,8 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
         public ChannelReader<string> StreamEcho(ChannelReader<string> source) => TestHubMethodsImpl.StreamEcho(source);
 
         public ChannelReader<int> StreamEchoInt(ChannelReader<int> source) => TestHubMethodsImpl.StreamEchoInt(source);
+
+        public IAsyncEnumerable<int> StreamIAsyncConsumer(IAsyncEnumerable<int> source) => source;
     }
 
     public class TestHubT : Hub<ITestHub>
@@ -157,6 +188,8 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
         public ChannelReader<string> StreamEcho(ChannelReader<string> source) => TestHubMethodsImpl.StreamEcho(source);
 
         public ChannelReader<int> StreamEchoInt(ChannelReader<int> source) => TestHubMethodsImpl.StreamEchoInt(source);
+
+        public IAsyncEnumerable<int> StreamIAsyncConsumer(IAsyncEnumerable<int> source) => source;
     }
 
     internal static class TestHubMethodsImpl
@@ -180,7 +213,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
                 for (var i = 0; i < count; i++)
                 {
                     await channel.Writer.WriteAsync(i);
-                    await Task.Delay(100);
+                    await Task.Delay(20);
                 }
 
                 channel.Writer.TryComplete();
@@ -199,7 +232,8 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
         public static ChannelReader<string> StreamEcho(ChannelReader<string> source)
         {
             var output = Channel.CreateUnbounded<string>();
-            _ = Task.Run(async () => {
+            _ = Task.Run(async () =>
+            {
                 try
                 {
                     while (await source.WaitToReadAsync())

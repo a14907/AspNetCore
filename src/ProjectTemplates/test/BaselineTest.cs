@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Testing;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Templates.Test.Helpers;
@@ -110,6 +111,11 @@ namespace Templates.Test
 
             text += LanguageRegex.Match(arguments)
                 .Groups.TryGetValue("language", out var language) ? language.Value.Replace("#", "Sharp") : "";
+
+            if (arguments.Contains("--support-pages-and-views true"))
+            {
+                text += "supportpagesandviewstrue";
+            }
 
             return text;
         }

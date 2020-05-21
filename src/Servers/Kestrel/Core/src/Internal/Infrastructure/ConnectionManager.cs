@@ -1,8 +1,12 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
+// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 {
@@ -27,9 +31,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
         /// </summary>
         public ResourceCounter UpgradedConnectionCount { get; }
 
-        public void AddConnection(long id, KestrelConnection connection)
+        public void AddConnection(long id, ConnectionReference connectionReference)
         {
-            if (!_connectionReferences.TryAdd(id, new ConnectionReference(connection)))
+            if (!_connectionReferences.TryAdd(id, connectionReference))
             {
                 throw new ArgumentException(nameof(id));
             }
@@ -37,9 +41,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
 
         public void RemoveConnection(long id)
         {
-            if (!_connectionReferences.TryRemove(id, out _))
+            if (!_connectionReferences.TryRemove(id, out var reference))
             {
                 throw new ArgumentException(nameof(id));
+            }
+
+            if (reference.TryGetConnection(out var connection))
+            {
+                connection.Complete();
             }
         }
 
@@ -58,6 +67,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure
                     // It's safe to modify the ConcurrentDictionary in the foreach.
                     // The connection reference has become unrooted because the application never completed.
                     _trace.ApplicationNeverCompleted(reference.ConnectionId);
+                    reference.StopTrasnsportTracking();
                 }
 
                 // If both conditions are false, the connection was removed during the heartbeat.

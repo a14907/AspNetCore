@@ -59,11 +59,10 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         [Fact]
         public async Task ClosedEventRaisedWhenTheClientIsStopped()
         {
-            var builder = new HubConnectionBuilder();
+            var builder = new HubConnectionBuilder().WithUrl("http://example.com");
 
             var delegateConnectionFactory = new DelegateConnectionFactory(
-                format => new TestConnection().StartAsync(format),
-                connection => ((TestConnection)connection).DisposeAsync());
+                endPoint => new TestConnection().StartAsync());
             builder.Services.AddSingleton<IConnectionFactory>(delegateConnectionFactory);
 
             var hubConnection = builder.Build();
@@ -77,6 +76,50 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             await hubConnection.StartAsync().OrTimeout();
             await hubConnection.StopAsync().OrTimeout();
             Assert.Null(await closedEventTcs.Task);
+        }
+
+        [Fact]
+        public async Task StopAsyncCanBeCalledFromOnHandler()
+        {
+            var connection = new TestConnection();
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            hubConnection.On("method", async () =>
+            {
+                await hubConnection.StopAsync().OrTimeout();
+                tcs.SetResult(null);
+            });
+
+            await hubConnection.StartAsync().OrTimeout();
+
+            await connection.ReceiveJsonMessage(new { type = HubProtocolConstants.InvocationMessageType, target= "method", arguments = new object[] { } }).OrTimeout();
+
+            Assert.Null(await tcs.Task.OrTimeout());
+        }
+
+        [Fact]
+        public async Task StopAsyncDoesNotWaitForOnHandlers()
+        {
+            var connection = new TestConnection();
+            var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+            var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var methodCalledTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            hubConnection.On("method", async () =>
+            {
+                methodCalledTcs.SetResult(null);
+                await tcs.Task;
+            });
+
+            await hubConnection.StartAsync().OrTimeout();
+
+            await connection.ReceiveJsonMessage(new { type = HubProtocolConstants.InvocationMessageType, target = "method", arguments = new object[] { } }).OrTimeout();
+
+            await methodCalledTcs.Task.OrTimeout();
+            await hubConnection.StopAsync().OrTimeout();
+
+            tcs.SetResult(null);
         }
 
         [Fact]
@@ -116,6 +159,98 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
                 var actualException = await Assert.ThrowsAsync<InvalidOperationException>(async () => await invokeTask);
                 Assert.Equal(exception, actualException);
+            }
+        }
+
+        [Fact]
+        public async Task PendingInvocationsAreCanceledWhenTokenTriggered()
+        {
+            using (StartVerifiableLog())
+            {
+                var hubConnection = CreateHubConnection(new TestConnection(), loggerFactory: LoggerFactory);
+
+                await hubConnection.StartAsync().OrTimeout();
+                var cts = new CancellationTokenSource();
+                var invokeTask = hubConnection.InvokeAsync<int>("testMethod", cancellationToken: cts.Token).OrTimeout();
+                cts.Cancel();
+
+                await Assert.ThrowsAsync<TaskCanceledException>(async () => await invokeTask);
+            }
+        }
+
+        [Fact]
+        public async Task InvokeAsyncCanceledWhenPassedCanceledToken()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+                await hubConnection.StartAsync().OrTimeout();
+                await Assert.ThrowsAsync<TaskCanceledException>(() =>
+                    hubConnection.InvokeAsync<int>("testMethod", cancellationToken: new CancellationToken(canceled: true)).OrTimeout());
+
+                await hubConnection.StopAsync().OrTimeout();
+
+                // Assert that InvokeAsync didn't send a message
+                Assert.Null(await connection.ReadSentTextMessageAsync().OrTimeout());
+            }
+        }
+
+        [Fact]
+        public async Task SendAsyncCanceledWhenPassedCanceledToken()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+                await hubConnection.StartAsync().OrTimeout();
+                await Assert.ThrowsAsync<TaskCanceledException>(() =>
+                    hubConnection.SendAsync("testMethod", cancellationToken: new CancellationToken(canceled: true)).OrTimeout());
+
+                await hubConnection.StopAsync().OrTimeout();
+
+                // Assert that SendAsync didn't send a message
+                Assert.Null(await connection.ReadSentTextMessageAsync().OrTimeout());
+            }
+        }
+
+        [Fact]
+        public async Task StreamAsChannelAsyncCanceledWhenPassedCanceledToken()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+                await hubConnection.StartAsync().OrTimeout();
+                await Assert.ThrowsAsync<TaskCanceledException>(() =>
+                    hubConnection.StreamAsChannelAsync<int>("testMethod", cancellationToken: new CancellationToken(canceled: true)).OrTimeout());
+
+                await hubConnection.StopAsync().OrTimeout();
+
+                // Assert that StreamAsChannelAsync didn't send a message
+                Assert.Null(await connection.ReadSentTextMessageAsync().OrTimeout());
+            }
+        }
+
+        [Fact]
+        public async Task StreamAsyncCanceledWhenPassedCanceledToken()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+
+                await hubConnection.StartAsync().OrTimeout();
+                var result = hubConnection.StreamAsync<int>("testMethod", cancellationToken: new CancellationToken(canceled: true));
+                await Assert.ThrowsAsync<TaskCanceledException>(() => result.GetAsyncEnumerator().MoveNextAsync().OrTimeout());
+
+                await hubConnection.StopAsync().OrTimeout();
+
+                // Assert that StreamAsync didn't send a message
+                Assert.Null(await connection.ReadSentTextMessageAsync().OrTimeout());
             }
         }
 
@@ -319,7 +454,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
         [Fact]
         [LogLevel(LogLevel.Trace)]
-        public async Task UploadStreamCancelationSendsStreamComplete()
+        public async Task UploadStreamCancellationSendsStreamComplete()
         {
             using (StartVerifiableLog())
             {
@@ -339,7 +474,6 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
                 // after cancellation, don't send from the pipe
                 foreach (var number in new[] { 42, 43, 322, 3145, -1234 })
                 {
-
                     await channel.Writer.WriteAsync(number);
                 }
 
@@ -347,7 +481,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
                 var complete = await connection.ReadSentJsonAsync().OrTimeout();
                 Assert.Equal(HubProtocolConstants.CompletionMessageType, complete["type"]);
                 Assert.EndsWith("canceled by client.", ((string)complete["error"]));
-            } 
+            }
         }
 
         [Fact]
@@ -413,6 +547,63 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
                 catch (Exception)
                 {
                 }
+            }
+        }
+
+        [Fact]
+        public async Task CanAwaitInvokeFromOnHandlerWithServerClosingConnection()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+                await hubConnection.StartAsync().OrTimeout();
+
+                var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+                hubConnection.On<string>("Echo", async msg =>
+                {
+                    try
+                    {
+                        // This should be canceled when the connection is closed
+                        await hubConnection.InvokeAsync<string>("Echo", msg).OrTimeout();
+                    }
+                    catch (Exception ex)
+                    {
+                        tcs.SetException(ex);
+                        return;
+                    }
+
+                    tcs.SetResult(null);
+                });
+
+                var closedTcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+                hubConnection.Closed += _ =>
+                {
+                    closedTcs.SetResult(null);
+
+                    return Task.CompletedTask;
+                };
+
+                await connection.ReceiveJsonMessage(new { type = HubProtocolConstants.InvocationMessageType, target = "Echo", arguments = new object[] { "42" } }).OrTimeout();
+
+                // Read sent message first to make sure invoke has been processed and is waiting for a response
+                await connection.ReadSentJsonAsync().OrTimeout();
+                await connection.ReceiveJsonMessage(new { type = HubProtocolConstants.CloseMessageType }).OrTimeout();
+
+                await closedTcs.Task.OrTimeout();
+
+                await Assert.ThrowsAsync<TaskCanceledException>(() => tcs.Task.OrTimeout());
+            }
+        }
+
+        [Fact]
+        public async Task CanAwaitUsingHubConnection()
+        {
+            using (StartVerifiableLog())
+            {
+                var connection = new TestConnection();
+                await using var hubConnection = CreateHubConnection(connection, loggerFactory: LoggerFactory);
+                await hubConnection.StartAsync().OrTimeout();
             }
         }
 

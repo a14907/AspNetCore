@@ -7,12 +7,12 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Hosting.Internal;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.AspNetCore.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Xunit;
 
@@ -23,10 +23,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
         private KestrelServerOptions CreateServerOptions()
         {
             var serverOptions = new KestrelServerOptions();
-            var env = new HostingEnvironment { ApplicationName = "TestApplication" };
+            var env = new MockHostingEnvironment { ApplicationName = "TestApplication" };
             serverOptions.ApplicationServices = new ServiceCollection()
                 .AddLogging()
-                .AddSingleton<IWebHostEnvironment>(env)
                 .AddSingleton<IHostEnvironment>(env)
                 .BuildServiceProvider();
             return serverOptions;
@@ -47,7 +46,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
                 .Load();
 
             Assert.Single(serverOptions.ListenOptions);
-            Assert.Equal(5001, serverOptions.ListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5001, serverOptions.ConfigurationBackedListenOptions[0].IPEndPoint.Port);
 
             Assert.True(found);
         }
@@ -65,7 +64,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             serverOptions.ConfigurationLoader.Load();
 
             Assert.Single(serverOptions.ListenOptions);
-            Assert.Equal(5001, serverOptions.ListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5001, serverOptions.CodeBackedListenOptions[0].IPEndPoint.Port);
 
             Assert.True(run);
         }
@@ -83,13 +82,13 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             builder.Load();
 
             Assert.Single(serverOptions.ListenOptions);
-            Assert.Equal(5001, serverOptions.ListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5001, serverOptions.CodeBackedListenOptions[0].IPEndPoint.Port);
             Assert.NotNull(serverOptions.ConfigurationLoader);
 
             builder.Load();
 
             Assert.Single(serverOptions.ListenOptions);
-            Assert.Equal(5001, serverOptions.ListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5001, serverOptions.CodeBackedListenOptions[0].IPEndPoint.Port);
             Assert.NotNull(serverOptions.ConfigurationLoader);
         }
 
@@ -118,9 +117,9 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
 
             serverOptions.ConfigurationLoader.Load();
 
-            Assert.Equal(2, serverOptions.ListenOptions.Count);
-            Assert.Equal(5002, serverOptions.ListenOptions[0].IPEndPoint.Port);
-            Assert.Equal(5003, serverOptions.ListenOptions[1].IPEndPoint.Port);
+            Assert.Equal(2, serverOptions.ListenOptions.Count());
+            Assert.Equal(5002, serverOptions.ConfigurationBackedListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5003, serverOptions.CodeBackedListenOptions[0].IPEndPoint.Port);
 
             Assert.False(run1);
             Assert.True(run2);
@@ -133,8 +132,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
 
             serverOptions.ConfigureEndpointDefaults(opt =>
             {
-                opt.NoDelay = false;
-                opt.Protocols = HttpProtocols.Http2;
+                opt.Protocols = HttpProtocols.Http1;
             });
 
             serverOptions.ConfigureHttpsDefaults(opt =>
@@ -156,22 +154,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
                     Assert.True(opt.IsHttps);
                     Assert.NotNull(opt.HttpsOptions.ServerCertificate);
                     Assert.Equal(ClientCertificateMode.RequireCertificate, opt.HttpsOptions.ClientCertificateMode);
-                    Assert.False(opt.ListenOptions.NoDelay);
-                    Assert.Equal(HttpProtocols.Http2, opt.ListenOptions.Protocols);
+                    Assert.Equal(HttpProtocols.Http1, opt.ListenOptions.Protocols);
                 })
                 .LocalhostEndpoint(5002, opt =>
                 {
                     ran2 = true;
-                    Assert.False(opt.NoDelay);
-                    Assert.Equal(HttpProtocols.Http2, opt.Protocols);
+                    Assert.Equal(HttpProtocols.Http1, opt.Protocols);
                 })
                 .Load();
 
             Assert.True(ran1);
             Assert.True(ran2);
 
-            Assert.NotNull(serverOptions.ListenOptions[0].ConnectionAdapters.Where(adapter => adapter.IsHttps).SingleOrDefault());
-            Assert.Null(serverOptions.ListenOptions[1].ConnectionAdapters.Where(adapter => adapter.IsHttps).SingleOrDefault());
+            Assert.True(serverOptions.ConfigurationBackedListenOptions[0].IsTls);
+            Assert.False(serverOptions.CodeBackedListenOptions[0].IsTls);
         }
 
         [Fact]
@@ -181,7 +177,6 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
 
             serverOptions.ConfigureEndpointDefaults(opt =>
             {
-                opt.NoDelay = false;
                 opt.UseHttps(TestResources.GetTestCertificate());
             });
 
@@ -202,12 +197,10 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
                     ran1 = true;
                     Assert.True(opt.IsHttps);
                     Assert.Equal(ClientCertificateMode.RequireCertificate, opt.HttpsOptions.ClientCertificateMode);
-                    Assert.False(opt.ListenOptions.NoDelay);
                 })
                 .LocalhostEndpoint(5002, opt =>
                 {
                     ran2 = true;
-                    Assert.False(opt.NoDelay);
                 })
                 .Load();
 
@@ -215,8 +208,8 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             Assert.True(ran2);
 
             // You only get Https once per endpoint.
-            Assert.NotNull(serverOptions.ListenOptions[0].ConnectionAdapters.Where(adapter => adapter.IsHttps).SingleOrDefault());
-            Assert.NotNull(serverOptions.ListenOptions[1].ConnectionAdapters.Where(adapter => adapter.IsHttps).SingleOrDefault());
+            Assert.True(serverOptions.ConfigurationBackedListenOptions[0].IsTls);
+            Assert.True(serverOptions.CodeBackedListenOptions[0].IsTls);
         }
 
         [Fact]
@@ -225,7 +218,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             try
             {
                 var serverOptions = CreateServerOptions();
-                var certificate = new X509Certificate2(TestResources.GetCertPath("aspnetdevcert.pfx"), "aspnetdevcert", X509KeyStorageFlags.Exportable);
+                var certificate = new X509Certificate2(TestResources.GetCertPath("aspnetdevcert.pfx"), "testPassword", X509KeyStorageFlags.Exportable);
                 var bytes = certificate.Export(X509ContentType.Pkcs12, "1234");
                 var path = GetCertificatePath();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
@@ -265,7 +258,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             try
             {
                 var serverOptions = CreateServerOptions();
-                var certificate = new X509Certificate2(TestResources.GetCertPath("aspnetdevcert.pfx"), "aspnetdevcert", X509KeyStorageFlags.Exportable);
+                var certificate = new X509Certificate2(TestResources.GetCertPath("aspnetdevcert.pfx"), "testPassword", X509KeyStorageFlags.Exportable);
                 var bytes = certificate.Export(X509ContentType.Pkcs12, "1234");
                 var path = GetCertificatePath();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
@@ -322,11 +315,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             }
         }
 
-        [Theory]
+        [ConditionalTheory]
+        [InlineData("http1", HttpProtocols.Http1)]
+        // [InlineData("http2", HttpProtocols.Http2)] // Not supported due to missing ALPN support. https://github.com/dotnet/corefx/issues/33016
+        [InlineData("http1AndHttp2", HttpProtocols.Http1AndHttp2)] // Gracefully falls back to HTTP/1
+        [OSSkipCondition(OperatingSystems.Linux)]
+        [MaximumOSVersion(OperatingSystems.Windows, WindowsVersions.Win7)]
+        public void DefaultConfigSectionCanSetProtocols_MacAndWin7(string input, HttpProtocols expected)
+            => DefaultConfigSectionCanSetProtocols(input, expected);
+
+        [ConditionalTheory]
         [InlineData("http1", HttpProtocols.Http1)]
         [InlineData("http2", HttpProtocols.Http2)]
         [InlineData("http1AndHttp2", HttpProtocols.Http1AndHttp2)]
-        public void DefaultConfigSectionCanSetProtocols(string input, HttpProtocols expected)
+        [OSSkipCondition(OperatingSystems.MacOSX)]
+        [MinimumOSVersion(OperatingSystems.Windows, WindowsVersions.Win81)]
+        public void DefaultConfigSectionCanSetProtocols_NonMacAndWin7(string input, HttpProtocols expected)
+            => DefaultConfigSectionCanSetProtocols(input, expected);
+
+        private void DefaultConfigSectionCanSetProtocols(string input, HttpProtocols expected)
         {
             var serverOptions = CreateServerOptions();
             var ranDefault = false;
@@ -377,11 +384,25 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             Assert.True(ran3);
         }
 
-        [Theory]
+        [ConditionalTheory]
+        [InlineData("http1", HttpProtocols.Http1)]
+        // [InlineData("http2", HttpProtocols.Http2)] // Not supported due to missing ALPN support. https://github.com/dotnet/corefx/issues/33016
+        [InlineData("http1AndHttp2", HttpProtocols.Http1AndHttp2)] // Gracefully falls back to HTTP/1
+        [OSSkipCondition(OperatingSystems.Linux)]
+        [MaximumOSVersion(OperatingSystems.Windows, WindowsVersions.Win7)]
+        public void EndpointConfigSectionCanSetProtocols_MacAndWin7(string input, HttpProtocols expected) =>
+            EndpointConfigSectionCanSetProtocols(input, expected);
+
+        [ConditionalTheory]
         [InlineData("http1", HttpProtocols.Http1)]
         [InlineData("http2", HttpProtocols.Http2)]
         [InlineData("http1AndHttp2", HttpProtocols.Http1AndHttp2)]
-        public void EndpointConfigSectionCanSetProtocols(string input, HttpProtocols expected)
+        [OSSkipCondition(OperatingSystems.MacOSX)]
+        [MinimumOSVersion(OperatingSystems.Windows, WindowsVersions.Win81)]
+        public void EndpointConfigSectionCanSetProtocols_NonMacAndWin7(string input, HttpProtocols expected) =>
+            EndpointConfigSectionCanSetProtocols(input, expected);
+
+        private void EndpointConfigSectionCanSetProtocols(string input, HttpProtocols expected)
         {
             var serverOptions = CreateServerOptions();
             var ranDefault = false;
@@ -435,6 +456,133 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             Assert.True(ran3);
         }
 
+        [Fact]
+        public void Latin1RequestHeadersReadFromConfig()
+        {
+            var options = CreateServerOptions();
+            var config =  new ConfigurationBuilder().AddInMemoryCollection().Build();
+
+            Assert.False(options.Latin1RequestHeaders);
+            options.Configure(config).Load();
+            Assert.False(options.Latin1RequestHeaders);
+
+            options = CreateServerOptions();
+            config = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Latin1RequestHeaders", "true"),
+            }).Build();
+
+            Assert.False(options.Latin1RequestHeaders);
+            options.Configure(config).Load();
+            Assert.True(options.Latin1RequestHeaders);
+        }
+
+        [Fact]
+        public void Reload_IdentifiesEndpointsToStartAndStop()
+        {
+            var serverOptions = CreateServerOptions();
+
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:A:Url", "http://*:5000"),
+                new KeyValuePair<string, string>("Endpoints:B:Url", "http://*:5001"),
+            }).Build();
+
+            serverOptions.Configure(config).Load();
+
+            Assert.Equal(2, serverOptions.ConfigurationBackedListenOptions.Count);
+            Assert.Equal(5000, serverOptions.ConfigurationBackedListenOptions[0].IPEndPoint.Port);
+            Assert.Equal(5001, serverOptions.ConfigurationBackedListenOptions[1].IPEndPoint.Port);
+
+            serverOptions.ConfigurationLoader.Configuration = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:A:Url", "http://*:5000"),
+                new KeyValuePair<string, string>("Endpoints:B:Url", "http://*:5002"),
+                new KeyValuePair<string, string>("Endpoints:C:Url", "http://*:5003"),
+            }).Build();
+
+            var (endpointsToStop, endpointsToStart) = serverOptions.ConfigurationLoader.Reload();
+
+            Assert.Single(endpointsToStop);
+            Assert.Equal(5001, endpointsToStop[0].IPEndPoint.Port);
+
+            Assert.Equal(2, endpointsToStart.Count);
+            Assert.Equal(5002, endpointsToStart[0].IPEndPoint.Port);
+            Assert.Equal(5003, endpointsToStart[1].IPEndPoint.Port);
+
+            Assert.Equal(3, serverOptions.ConfigurationBackedListenOptions.Count);
+            Assert.Equal(5000, serverOptions.ConfigurationBackedListenOptions[0].IPEndPoint.Port);
+            Assert.Same(endpointsToStart[0], serverOptions.ConfigurationBackedListenOptions[1]);
+            Assert.Same(endpointsToStart[1], serverOptions.ConfigurationBackedListenOptions[2]);
+        }
+
+        [Fact]
+        public void Reload_IdentifiesEndpointsWithChangedDefaults()
+        {
+            var serverOptions = CreateServerOptions();
+
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:DefaultProtocol:Url", "http://*:5000"),
+                new KeyValuePair<string, string>("Endpoints:NonDefaultProtocol:Url", "http://*:5001"),
+                new KeyValuePair<string, string>("Endpoints:NonDefaultProtocol:Protocols", "Http1AndHttp2"),
+            }).Build();
+
+            serverOptions.Configure(config).Load();
+
+            serverOptions.ConfigurationLoader.Configuration = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:DefaultProtocol:Url", "http://*:5000"),
+                new KeyValuePair<string, string>("Endpoints:NonDefaultProtocol:Url", "http://*:5001"),
+                new KeyValuePair<string, string>("Endpoints:NonDefaultProtocol:Protocols", "Http1AndHttp2"),
+                new KeyValuePair<string, string>("EndpointDefaults:Protocols", "Http1"),
+            }).Build();
+
+            var (endpointsToStop, endpointsToStart) = serverOptions.ConfigurationLoader.Reload();
+
+            Assert.Single(endpointsToStop);
+            Assert.Single(endpointsToStart);
+
+            Assert.Equal(5000, endpointsToStop[0].IPEndPoint.Port);
+            Assert.Equal(HttpProtocols.Http1AndHttp2, endpointsToStop[0].Protocols);
+            Assert.Equal(5000, endpointsToStart[0].IPEndPoint.Port);
+            Assert.Equal(HttpProtocols.Http1, endpointsToStart[0].Protocols);
+        }
+
+        [Fact]
+        public void Reload_RerunsNamedEndpointConfigurationOnChange()
+        {
+            var foundChangedCount = 0;
+            var foundUnchangedCount = 0;
+            var serverOptions = CreateServerOptions();
+
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:Changed:Url", "http://*:5001"),
+                new KeyValuePair<string, string>("Endpoints:Unchanged:Url", "http://*:5000"),
+            }).Build();
+
+            serverOptions.Configure(config)
+                .Endpoint("Changed", endpointOptions => foundChangedCount++)
+                .Endpoint("Unchanged", endpointOptions => foundUnchangedCount++)
+                .Endpoint("NotFound", endpointOptions => throw new NotImplementedException())
+                .Load();
+
+            Assert.Equal(1, foundChangedCount);
+            Assert.Equal(1, foundUnchangedCount);
+
+            serverOptions.ConfigurationLoader.Configuration = new ConfigurationBuilder().AddInMemoryCollection(new[]
+            {
+                new KeyValuePair<string, string>("Endpoints:Changed:Url", "http://*:5002"),
+                new KeyValuePair<string, string>("Endpoints:Unchanged:Url", "http://*:5000"),
+            }).Build();
+
+            serverOptions.ConfigurationLoader.Reload();
+
+            Assert.Equal(2, foundChangedCount);
+            Assert.Equal(1, foundUnchangedCount);
+        }
+
         private static string GetCertificatePath()
         {
             var appData = Environment.GetEnvironmentVariable("APPDATA");
@@ -442,6 +590,14 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Tests
             var basePath = appData != null ? Path.Combine(appData, "ASP.NET", "https") : null;
             basePath = basePath ?? (home != null ? Path.Combine(home, ".aspnet", "https") : null);
             return Path.Combine(basePath, $"TestApplication.pfx");
+        }
+
+        private class MockHostingEnvironment : IHostEnvironment
+        {
+            public string ApplicationName { get; set; }
+            public string EnvironmentName { get; set; }
+            public string ContentRootPath { get; set; }
+            public IFileProvider ContentRootFileProvider { get; set; }
         }
     }
 }

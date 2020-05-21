@@ -51,16 +51,11 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Infrastructure
             return false;
         }
 
-        public Task ApplyAsync(HttpContext httpContext, EndpointSelectorContext context, CandidateSet candidates)
+        public Task ApplyAsync(HttpContext httpContext, CandidateSet candidates)
         {
             if (httpContext == null)
             {
                 throw new ArgumentNullException(nameof(httpContext));
-            }
-
-            if (context == null)
-            {
-                throw new ArgumentNullException(nameof(context));
             }
 
             if (candidates == null)
@@ -70,6 +65,11 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Infrastructure
 
             for (var i = 0; i < candidates.Count; i++)
             {
+                if (!candidates.IsValidCandidate(i))
+                {
+                    continue;
+                }
+
                 ref var candidate = ref candidates[i];
                 var endpoint = candidate.Endpoint;
 
@@ -78,7 +78,16 @@ namespace Microsoft.AspNetCore.Mvc.RazorPages.Infrastructure
                 {
                     // We found an endpoint instance that has a PageActionDescriptor, but not a
                     // CompiledPageActionDescriptor. Update the CandidateSet.
-                    var compiled = _loader.LoadAsync(page);
+                    Task<CompiledPageActionDescriptor> compiled;
+                    if (_loader is DefaultPageLoader defaultPageLoader)
+                    {
+                        compiled = defaultPageLoader.LoadAsync(page, endpoint.Metadata);
+                    }
+                    else
+                    {
+                        compiled = _loader.LoadAsync(page);
+                    }
+
                     if (compiled.IsCompletedSuccessfully)
                     {
                         candidates.ReplaceEndpoint(i, compiled.Result.Endpoint, candidate.Values);

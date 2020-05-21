@@ -2,8 +2,8 @@
 
   <PropertyGroup>
     <Description>Helpers for building single-page applications on ASP.NET MVC Core.</Description>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
-    <IsShippingPackage>true</IsShippingPackage>
+    <TargetFramework>$(DefaultNetCoreTargetFramework)</TargetFramework>
+    <IsPackable>true</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
@@ -25,15 +25,7 @@
 
   <Target Name="YarnInstall">
     <Message Text="Running yarn install on $(MSBuildProjectFile)" Importance="High" />
-    <Yarn Command="install" />
-  </Target>
-
-  <Target Name="_IsCustomRestoreTargetSupported" Returns="@(CustomRestoreTargets)" Condition="'$(BuildNodeJs)' == 'true'">
-    <ItemGroup>
-      <CustomRestoreTargets Include="$(MSBuildProjectFullPath)">
-        <Targets>YarnInstall</Targets>
-      </CustomRestoreTargets>
-    </ItemGroup>
+    <Yarn Command="install --mutex network" />
   </Target>
 
   <Target Name="PrepublishScript" DependsOnTargets="YarnInstall" BeforeTargets="PrepareForPublish" Condition=" '$(IsCrossTargetingBuild)' != 'true' ">

@@ -5,6 +5,7 @@ using System;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -13,8 +14,6 @@ using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Infrastructure;
 using Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests.TestTransport;
 using Microsoft.AspNetCore.Server.Kestrel.Tests;
 using Microsoft.AspNetCore.Testing;
-using Microsoft.AspNetCore.Testing.xunit;
-using Microsoft.Extensions.Logging.Testing;
 using Xunit;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
@@ -143,7 +142,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
         }
 
         [Fact]
-        [Flaky("https://github.com/aspnet/KestrelHttpServer/issues/2282", FlakyOn.AzP.macOS)]
+        [QuarantinedTest("https://github.com/aspnet/KestrelHttpServer/issues/2282")]
         public async Task ConnectionCountingReturnsToZero()
         {
             const int count = 100;
@@ -207,15 +206,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.InMemory.FunctionalTests
 
         private TestServer CreateServerWithMaxConnections(RequestDelegate app, ResourceCounter concurrentConnectionCounter)
         {
-            var serviceContext = new TestServiceContext(LoggerFactory)
-            {
-                ExpectedConnectionMiddlewareCount = 1
-            };
+            var serviceContext = new TestServiceContext(LoggerFactory);
 
             var listenOptions = new ListenOptions(new IPEndPoint(IPAddress.Loopback, 0));
             listenOptions.Use(next =>
             {
-                var middleware = new ConnectionLimitMiddleware(next, concurrentConnectionCounter, serviceContext.Log);
+                var middleware = new ConnectionLimitMiddleware<ConnectionContext>(c => next(c), concurrentConnectionCounter, serviceContext.Log);
                 return middleware.OnConnectionAsync;
             });
 

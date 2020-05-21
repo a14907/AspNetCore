@@ -2,7 +2,6 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -11,6 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 using FormatterWebSite.Controllers;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -21,13 +21,14 @@ namespace Microsoft.AspNetCore.Mvc.FunctionalTests
     {
         protected JsonOutputFormatterTestBase(MvcTestFixture<TStartup> fixture)
         {
-            var factory = fixture.Factories.FirstOrDefault() ?? fixture.WithWebHostBuilder(ConfigureWebHostBuilder);
-            Client = factory.CreateDefaultClient();
+            Factory = fixture.Factories.FirstOrDefault() ?? fixture.WithWebHostBuilder(ConfigureWebHostBuilder);
+            Client = Factory.CreateDefaultClient();
         }
 
         private static void ConfigureWebHostBuilder(IWebHostBuilder builder) =>
             builder.UseStartup<TStartup>();
 
+        public WebApplicationFactory<TStartup> Factory { get; }
         public HttpClient Client { get; }
 
         [Fact]
@@ -101,6 +102,17 @@ namespace Microsoft.AspNetCore.Mvc.FunctionalTests
         }
 
         [Fact]
+        public virtual async Task Formatting_StringValueWithNonAsciiCharacters()
+        {
+            // Act
+            var response = await Client.GetAsync($"/JsonOutputFormatter/{nameof(JsonOutputFormatterController.StringWithNonAsciiContent)}");
+
+            // Assert
+            await response.AssertStatusCodeAsync(HttpStatusCode.OK);
+            Assert.Equal("\"Une bête de cirque\"", await response.Content.ReadAsStringAsync());
+        }
+
+        [Fact]
         public virtual async Task Formatting_SimpleModel()
         {
             // Arrange
@@ -142,15 +154,17 @@ namespace Microsoft.AspNetCore.Mvc.FunctionalTests
             Assert.Equal(expected, await response.Content.ReadAsStringAsync());
         }
 
-        [Fact]
-        public virtual async Task Formatting_LargeObject()
+        [Theory]
+        [InlineData(65 * 1024)]
+        [InlineData(2 * 1024 * 1024)]
+        public virtual async Task Formatting_LargeObject(int size)
         {
             // Arrange
-            var expectedName = "This is long so we can test large objects " + new string('a', 1024 * 65);
+            var expectedName = "This is long so we can test large objects " + new string('a', size);
             var expected = $"{{\"id\":10,\"name\":\"{expectedName}\",\"streetName\":null}}";
 
             // Act
-            var response = await Client.GetAsync($"/JsonOutputFormatter/{nameof(JsonOutputFormatterController.LargeObjectResult)}");
+            var response = await Client.GetAsync($"/JsonOutputFormatter/{nameof(JsonOutputFormatterController.LargeObjectResult)}/{size}");
 
             // Assert
             await response.AssertStatusCodeAsync(HttpStatusCode.OK);

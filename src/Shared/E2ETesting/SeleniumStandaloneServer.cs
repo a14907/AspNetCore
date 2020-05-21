@@ -30,7 +30,7 @@ namespace Microsoft.AspNetCore.E2ETesting
         private static IMessageSink _diagnosticsMessageSink;
 
         // 1h 30 min
-        private static int SeleniumProcessTimeout = 5400;
+        private static int SeleniumProcessTimeout = 3600;
 
         public SeleniumStandaloneServer(IMessageSink diagnosticsMessageSink)
         {
@@ -64,13 +64,9 @@ namespace Microsoft.AspNetCore.E2ETesting
 
         public static async Task<SeleniumStandaloneServer> GetInstanceAsync(ITestOutputHelper output)
         {
-            await _semaphore.WaitAsync();
             try
             {
-                if (Instance == null)
-                {
-
-                }
+                await _semaphore.WaitAsync();
                 if (Instance._process == null)
                 {
                     // No process was started, meaning the instance wasn't initialized.
@@ -90,10 +86,20 @@ namespace Microsoft.AspNetCore.E2ETesting
             var port = FindAvailablePort();
             var uri = new UriBuilder("http", "localhost", port, "/wd/hub").Uri;
 
+            var seleniumConfigPath = typeof(SeleniumStandaloneServer).Assembly
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(k => k.Key == "Microsoft.AspNetCore.Testing.SeleniumConfigPath")
+                ?.Value;
+
+            if (seleniumConfigPath == null)
+            {
+                throw new InvalidOperationException("Selenium config path not configured. Does this project import the E2ETesting.targets?");
+            }
+
             var psi = new ProcessStartInfo
             {
                 FileName = "npm",
-                Arguments = $"run selenium-standalone start -- -- -port {port}",
+                Arguments = $"run selenium-standalone start -- --config \"{seleniumConfigPath}\" -- -port {port}",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
@@ -107,6 +113,13 @@ namespace Microsoft.AspNetCore.E2ETesting
             // It's important that we get the folder value before we start the process to prevent
             // untracked processes when the tracking folder is not correctly configure.
             var trackingFolder = GetProcessTrackingFolder();
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("helix")))
+            {
+                // Just create a random tracking folder on helix
+                trackingFolder = Path.Combine(Directory.GetCurrentDirectory(), Path.GetRandomFileName());
+                Directory.CreateDirectory(trackingFolder);
+            }
+            
             if (!Directory.Exists(trackingFolder))
             {
                 throw new InvalidOperationException($"Invalid tracking folder. Set the 'SeleniumProcessTrackingFolder' MSBuild property to a valid folder.");
@@ -139,7 +152,7 @@ namespace Microsoft.AspNetCore.E2ETesting
             process.BeginErrorReadLine();
 
             // The Selenium sever has to be up for the entirety of the tests and is only shutdown when the application (i.e. the test) exits.
-            AppDomain.CurrentDomain.ProcessExit += (sender, args) => ProcessCleanup(process, pidFilePath);
+            // AppDomain.CurrentDomain.ProcessExit += (sender, args) => ProcessCleanup(process, pidFilePath);
 
             // Log
             void LogOutput(object sender, DataReceivedEventArgs e)
@@ -183,7 +196,7 @@ namespace Microsoft.AspNetCore.E2ETesting
             output = null;
             logOutput.CompleteAdding();
             var exitCodeString = process.HasExited ? process.ExitCode.ToString() : "Process has not yet exited.";
-            var message = @$"Failed to launch the server.
+            var message = $@"Failed to launch the server.
 ExitCode: {exitCodeString}
 Captured output lines:
 {string.Join(Environment.NewLine, logOutput.GetConsumingEnumerable())}.";
@@ -195,7 +208,7 @@ Captured output lines:
 
         private static Process StartSentinelProcess(Process process, string sentinelFile, int timeout)
         {
-            // This sentinel process will start and will kill any roge selenium server that want' torn down
+            // This sentinel process will start and will kill any rouge selenium server that want' torn down
             // via normal means.
             var psi = new ProcessStartInfo
             {
@@ -211,19 +224,20 @@ Captured output lines:
 
         private static void ProcessCleanup(Process process, string pidFilePath)
         {
-            if (process?.HasExited == false)
-            {
-                try
-                {
-                    process?.KillTree(TimeSpan.FromSeconds(10));
-                    process?.Dispose();
-                }
-                catch
-                {
-                }
-            }
             try
             {
+                if (process?.HasExited == false)
+                {
+                    try
+                    {
+                        process?.KillTree(TimeSpan.FromSeconds(10));
+                        process?.Dispose();
+                    }
+                    catch
+                    {
+                        // Ignore errors here since we can't do anything
+                    }
+                }
                 if (pidFilePath != null && File.Exists(pidFilePath))
                 {
                     File.Delete(pidFilePath);
@@ -231,6 +245,7 @@ Captured output lines:
             }
             catch
             {
+                // Ignore errors here since we can't do anything
             }
         }
 

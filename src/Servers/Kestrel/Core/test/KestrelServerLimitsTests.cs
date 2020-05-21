@@ -1,4 +1,4 @@
-﻿// Copyright (c) .NET Foundation. All rights reserved.
+// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
@@ -333,17 +333,16 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Tests
         [Theory]
         [InlineData(int.MinValue)]
         [InlineData(-1)]
-        [InlineData(0)]
         public void Http2HeaderTableSizeInvalid(int value)
         {
             var ex = Assert.Throws<ArgumentOutOfRangeException>(() => new KestrelServerLimits().Http2.HeaderTableSize = value);
-            Assert.StartsWith(CoreStrings.GreaterThanZeroRequired, ex.Message);
+            Assert.StartsWith(CoreStrings.GreaterThanOrEqualToZeroRequired, ex.Message);
         }
 
         [Fact]
         public void Http2MaxRequestHeaderFieldSizeDefault()
         {
-            Assert.Equal(8192, new KestrelServerLimits().Http2.MaxRequestHeaderFieldSize);
+            Assert.Equal(16 * 1024, new KestrelServerLimits().Http2.MaxRequestHeaderFieldSize);
         }
 
         [Theory]

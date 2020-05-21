@@ -4,10 +4,10 @@
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Server.IIS.FunctionalTests.Utilities;
 using Microsoft.AspNetCore.Server.IntegrationTesting;
-using Microsoft.AspNetCore.Testing.xunit;
+using Microsoft.AspNetCore.Testing;
 using Xunit;
 
-namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
+namespace Microsoft.AspNetCore.Server.IIS.FunctionalTests.InProcess
 {
     [Collection(PublishedSitesCollection.Name)]
 
@@ -125,6 +125,23 @@ namespace Microsoft.AspNetCore.Server.IISIntegration.FunctionalTests
             deploymentParameters.EnvironmentVariables["TestVariable"] = "World";
             deploymentParameters.WebConfigBasedEnvironmentVariables["OtherVariable"] = "%TestVariable%;Hello";
             Assert.Equal("World;Hello", await GetStringAsync(deploymentParameters, "/GetEnvironmentVariable?name=OtherVariable"));
+        }
+
+        [ConditionalTheory]
+        [RequiresIIS(IISCapability.PoolEnvironmentVariables)]
+        [RequiresNewHandler]
+        [RequiresNewShim]
+        [InlineData(HostingModel.InProcess)]
+        [InlineData(HostingModel.OutOfProcess)]
+        public async Task PreferEnvironmentVariablesOverWebConfigWhenConfigured(HostingModel hostingModel)
+        {
+            var deploymentParameters = Fixture.GetBaseDeploymentParameters(hostingModel);
+
+            var environment = "Development";
+            deploymentParameters.EnvironmentVariables["ANCM_PREFER_ENVIRONMENT_VARIABLES"] = "true";
+            deploymentParameters.EnvironmentVariables["ASPNETCORE_ENVIRONMENT"] = environment;
+            deploymentParameters.WebConfigBasedEnvironmentVariables.Add("ASPNETCORE_ENVIRONMENT", "Debug");
+            Assert.Equal(environment, await GetStringAsync(deploymentParameters, "/GetEnvironmentVariable?name=ASPNETCORE_ENVIRONMENT"));
         }
     }
 }

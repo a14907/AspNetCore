@@ -4,7 +4,6 @@
 using System;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
-using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -15,51 +14,49 @@ namespace Microsoft.Extensions.DependencyInjection
     public static class AuthorizationServiceCollectionExtensions
     {
         /// <summary>
-        /// Adds authorization services to the specified <see cref="IServiceCollection" />. 
+        /// Adds authorization services to the specified <see cref="IServiceCollection" />.
         /// </summary>
         /// <param name="services">The <see cref="IServiceCollection" /> to add services to.</param>
         /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
-        public static IServiceCollection AddAuthorization(this IServiceCollection services)
+        public static IServiceCollection AddAuthorizationCore(this IServiceCollection services)
         {
             if (services == null)
             {
                 throw new ArgumentNullException(nameof(services));
             }
-            
+
+            // These services depend on options, and they are used in Blazor WASM, where options
+            // aren't included by default.
+            services.AddOptions();
+
             services.TryAdd(ServiceDescriptor.Transient<IAuthorizationService, DefaultAuthorizationService>());
             services.TryAdd(ServiceDescriptor.Transient<IAuthorizationPolicyProvider, DefaultAuthorizationPolicyProvider>());
             services.TryAdd(ServiceDescriptor.Transient<IAuthorizationHandlerProvider, DefaultAuthorizationHandlerProvider>());
             services.TryAdd(ServiceDescriptor.Transient<IAuthorizationEvaluator, DefaultAuthorizationEvaluator>());
             services.TryAdd(ServiceDescriptor.Transient<IAuthorizationHandlerContextFactory, DefaultAuthorizationHandlerContextFactory>());
             services.TryAddEnumerable(ServiceDescriptor.Transient<IAuthorizationHandler, PassThroughAuthorizationHandler>());
-            services.TryAddSingleton<AuthorizationMarkerService>();
-
-            // Policy
-            services.TryAdd(ServiceDescriptor.Transient<IPolicyEvaluator, PolicyEvaluator>());
-
             return services;
         }
 
         /// <summary>
-        /// Adds authorization services to the specified <see cref="IServiceCollection" />. 
+        /// Adds authorization services to the specified <see cref="IServiceCollection" />.
         /// </summary>
         /// <param name="services">The <see cref="IServiceCollection" /> to add services to.</param>
         /// <param name="configure">An action delegate to configure the provided <see cref="AuthorizationOptions"/>.</param>
         /// <returns>The <see cref="IServiceCollection"/> so that additional calls can be chained.</returns>
-        public static IServiceCollection AddAuthorization(this IServiceCollection services, Action<AuthorizationOptions> configure)
+        public static IServiceCollection AddAuthorizationCore(this IServiceCollection services, Action<AuthorizationOptions> configure)
         {
             if (services == null)
             {
                 throw new ArgumentNullException(nameof(services));
             }
 
-            if (configure == null)
+            if (configure != null)
             {
-                throw new ArgumentNullException(nameof(configure));
+                services.Configure(configure);
             }
 
-            services.Configure(configure);
-            return services.AddAuthorization();
+            return services.AddAuthorizationCore();
         }
     }
 }
